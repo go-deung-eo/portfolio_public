@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TTS 동적 문장 배칭과 서빙 비용 정리 — 곽동우 · Dongwoo Kwak</title>
-<meta name="description" content="CUDA Graph로 업그레이드된 GPT-SoVITS 서버에 동적 문장 배칭을 붙여 요청 수 75% 감소(TTFB 손실 없음), 엔진/GPU 노드 분리로 AWS GPU 노드 40% 절감, Gemini 챗봇 모듈과 RAG·이미지 모델 연동 개선">
+<meta name="description" content="CUDA Graph로 업그레이드된 GPT-SoVITS 서버에 동적 문장 배칭을 붙여 요청 수 75% 감소·E2E 지연 최대 80% 단축, 엔진/GPU 노드 분리로 AWS GPU 노드 40% 절감, Gemini 챗봇 모듈과 RAG·이미지 모델 연동 개선">
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body>
@@ -21,7 +21,7 @@
   <dt>기간</dt><dd>2025.03 – 2026.01 (항목별: TTS 배칭 3주, Gemini 모듈 2주, RAG 기능 3일, 2세대 이미지 모델 연동 2025.08~)</dd>
   <dt>역할 범위</dt><dd>엔진 측 TTS 동적 배칭 로직, 미디어 엔진·추론 노드 분리, Gemini 챗봇 모듈, RAG 모듈 기능, 2세대 이미지 모델 연동을 개발했다. TTS·이미지 모델 자체와 TTS 모델의 CUDA Graph 업그레이드는 본인 작업 범위 밖이다.</dd>
   <dt>기술</dt><dd>C++17, Python 3.12, NVIDIA Triton Inference Server, GPT-SoVITS, LangChain, Gemini API, AWS, Kubernetes</dd>
-  <dt>핵심 결과</dt><dd>TTS 요청 수 −75% (100문장, TTFB 손실 없음) · AWS GPU 노드 −40% · 챗봇 토큰 단가 95% 이상 절감 · 사전 데이터 4 GB → 800 MB</dd>
+  <dt>핵심 결과</dt><dd>TTS 요청 수 −75% (100문장), E2E 지연 최대 −80% · AWS GPU 노드 −40% · 챗봇 토큰 단가 95% 이상 절감 · 사전 데이터 4 GB → 800 MB</dd>
 </dl>
 
 <h2>배경</h2>
@@ -55,7 +55,8 @@
   <caption>항목별 전후 비교</caption>
   <thead><tr><th>항목</th><th>수정 전</th><th>수정 후</th><th>조건</th></tr></thead>
   <tbody>
-    <tr><td>TTS 요청 수</td><td class="num">100회</td><td class="num">25회 (−75%)</td><td>100문장 기준, TTFB 손실 없음</td></tr>
+    <tr><td>TTS 요청 수</td><td class="num">100회</td><td class="num">25회 (−75%)</td><td>100문장 기준</td></tr>
+    <tr><td>E2E 지연</td><td class="num">기준</td><td class="num">최대 −80%</td><td>TTFB는 기존 이하로 유지하는 조건에서</td></tr>
     <tr><td>엔진 프로세스 : GPU 노드</td><td class="num">10 : 1</td><td class="num">50 : 3</td><td>같은 프로세스 수 기준 AWS GPU 노드 −40%</td></tr>
     <tr><td>챗봇 토큰 단가</td><td>GPT 계열 (o4-mini)</td><td>Gemini 2.5 Flash-Lite</td><td>단가표 기준 95% 이상 절감</td></tr>
     <tr><td>RAG 문서 갱신</td><td>서버 재시작 필요</td><td>재시작 없이 반영</td><td>.xlsx 형식 지원 추가</td></tr>
