@@ -12,7 +12,7 @@
 <header class="masthead">
   <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
   <h1>임베딩 서빙 엔진 비교, 정합성 검증부터</h1>
-  <p class="sub">vLLM · SGLang · MEI 벤치마크와 HTTP 200 뒤에 숨은 계약 결함 · 약 3분</p>
+  <p class="sub">vLLM · SGLang 중심 엔진 비교와 HTTP 200 뒤에 숨은 계약 결함 · 약 3분</p>
   <nav><a href="../index.html">요약</a><a href="../index.html#index">목차</a><a href="../resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="../resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
 </header>
 <main>
@@ -20,7 +20,7 @@
   <dt>소속</dt><dd>Dnotitia · Inference Optimization 파트</dd>
   <dt>기간</dt><dd>2026.08 – 2026.09</dd>
   <dt>역할 범위</dt><dd>벤치마크 설계, 측정, 원인 분석, 사내 리포트 작성은 본인 단독 작업이다. 임베딩 모델은 다른 팀이 개발했다.</dd>
-  <dt>기술</dt><dd>vLLM 0.19 / 0.28, SGLang 0.5.6 / 0.5.10, MEI 1.9.3, sentence-transformers, MTEB / MIEB, RTX 5090</dd>
+  <dt>기술</dt><dd>vLLM 0.19 / 0.28, SGLang 0.5.6 / 0.5.10, candle 기반 경량 엔진, sentence-transformers, MTEB / MIEB, RTX 5090</dd>
   <dt>핵심 결과</dt><dd>텍스트 66,810 tokens/s, 이미지 358 img/s(SGLang 대비 3.1배), MTEB Spearman 0.848 → 0.718 열화를 일으키는 무경고 결함 규명</dd>
 </dl>
 
@@ -32,35 +32,35 @@
 
 <h2>결과</h2>
 <table>
-  <caption>텍스트, RTX 5090, vLLM 0.19.0 · SGLang 0.5.6.post2 · MEI 1.9.3</caption>
-  <thead><tr><th>지표</th><th class="num">vLLM</th><th class="num">SGLang</th><th class="num">MEI</th></tr></thead>
+  <caption>텍스트, RTX 5090, vLLM 0.19.0 · SGLang 0.5.6.post2</caption>
+  <thead><tr><th>지표</th><th class="num">vLLM</th><th class="num">SGLang</th></tr></thead>
   <tbody>
-    <tr><td>최대 처리량, tokens/s (입력 256, 동시성 64)</td><td class="num">66,810</td><td class="num">61,358</td><td class="num">39,366</td></tr>
-    <tr><td>최소 지연 p50 (입력 32, 동시성 1)</td><td class="num">5.3 ms</td><td class="num">6.3 ms</td><td class="num">6.9 ms</td></tr>
-    <tr><td>최대 입력 길이</td><td class="num">32K</td><td class="num">32K</td><td class="num">8K</td></tr>
-    <tr><td>상주 VRAM (단문 구성)</td><td class="num">9.2 GiB</td><td class="num">10.3 GiB</td><td class="num">4.8 GiB</td></tr>
+    <tr><td>최대 처리량, tokens/s (입력 256, 동시성 64)</td><td class="num">66,810</td><td class="num">61,358</td></tr>
+    <tr><td>최소 지연 p50 (입력 32, 동시성 1)</td><td class="num">5.3 ms</td><td class="num">6.3 ms</td></tr>
+    <tr><td>최대 입력 길이</td><td class="num">32K</td><td class="num">32K</td></tr>
+    <tr><td>상주 VRAM (단문 구성)</td><td class="num">9.2 GiB</td><td class="num">10.3 GiB</td></tr>
   </tbody>
 </table>
 <table>
-  <caption>이미지, RTX 5090, vLLM 0.28.0 · SGLang 0.5.10.post1 · MEI 1.9.3</caption>
-  <thead><tr><th>지표</th><th class="num">vLLM</th><th class="num">SGLang</th><th class="num">MEI</th></tr></thead>
+  <caption>이미지, RTX 5090, vLLM 0.28.0 · SGLang 0.5.10.post1</caption>
+  <thead><tr><th>지표</th><th class="num">vLLM</th><th class="num">SGLang</th></tr></thead>
   <tbody>
-    <tr><td>224², 동시성 32, img/s</td><td class="num">358.0</td><td class="num">114.5</td><td class="num">76.2</td></tr>
-    <tr><td>1152², 동시성 1, p50</td><td class="num">78.6 ms</td><td class="num">128.4 ms</td><td class="num">거부 (0.59 MP 초과)</td></tr>
-    <tr><td>참조 대비 코사인 (기준 0.995)</td><td class="num">0.9982</td><td class="num">0.9988</td><td class="num">0.9887</td></tr>
+    <tr><td>224², 동시성 32, img/s</td><td class="num">358.0</td><td class="num">114.5</td></tr>
+    <tr><td>1152², 동시성 1, p50</td><td class="num">78.6 ms</td><td class="num">128.4 ms</td></tr>
+    <tr><td>참조 대비 코사인 (기준 0.995)</td><td class="num">0.9982</td><td class="num">0.9988</td></tr>
   </tbody>
 </table>
-<p>텍스트는 vLLM이 전 구간에서 앞섰다. SGLang은 처리량 기준 vLLM의 88–92%였고, 배치 예산을 키우면 격차가 11%에서 8%로 줄었다. 세 엔진 모두 예산 16K 근처에서 포화했다. 이미지는 320² 이하 단건에서만 MEI가 근소하게 앞섰고, 448²부터는 vLLM이 앞서며 크기가 커질수록 격차가 벌어졌다. MEI는 상주 VRAM이 vLLM의 절반이지만 처리량은 55–60%이고, 이미지는 정확도 기준 미달이라 권고하지 않았다. MEI의 39,366은 기동 가능한 최대 예산(8K) 값이다.</p>
+<p>텍스트는 vLLM이 전 구간에서 앞섰다. SGLang은 처리량 기준 vLLM의 88–92%였고, 배치 예산을 키우면 격차가 11%에서 8%로 줄었다. 두 엔진 모두 예산 16K 근처에서 포화했다. 이미지는 448²부터 vLLM이 앞서며 크기가 커질수록 격차가 벌어졌다. 함께 비교한 candle 기반 경량 엔진은 상주 VRAM이 절반 수준이었지만 처리량, 최대 입력 길이, 이미지 정확도에서 기준에 못 미쳐 권고 대상에서 뺐다(이 엔진의 측정값은 공개 범위 밖이라 생략).</p>
 
 <h3>격차는 어디서 오는가</h3>
-<p>총 토큰 수를 맞춘 텍스트 요청과 이미지 요청의 지연 차이로 비전 경로 비용을 LM prefill에서 분리했다. 텍스트 prefill은 엔진 간 차이가 약 10%에 그쳤다. 이미지 격차는 거의 전부 비전 인코더에서 나왔고, flash attention을 쓰는 vLLM의 비전 인코더가 5–11배 빨랐다. 장문 텍스트에서 처리량이 꺾이는 이유도 같은 방식으로 확인했다. vLLM의 토큰당 지연 기울기는 256 → 2K 구간 17.8 µs에서 8K → 32K 구간 38.9 µs로 커졌고, 이는 어텐션의 초선형 비용이다. MEI는 요청을 사실상 순차 처리해서, 224² 기준 동시성을 1에서 32로 올려도 처리량이 1.12배만 늘었다(vLLM 2.80배).</p>
+<p>총 토큰 수를 맞춘 텍스트 요청과 이미지 요청의 지연 차이로 비전 경로 비용을 LM prefill에서 분리했다. 텍스트 prefill은 엔진 간 차이가 약 10%에 그쳤다. 이미지 격차는 거의 전부 비전 인코더에서 나왔고, flash attention을 쓰는 vLLM의 비전 인코더가 5–11배 빨랐다. 장문 텍스트에서 처리량이 꺾이는 이유도 같은 방식으로 확인했다. vLLM의 토큰당 지연 기울기는 256 → 2K 구간 17.8 µs에서 8K → 32K 구간 38.9 µs로 커졌고, 이는 어텐션의 초선형 비용이다. 경량 엔진은 요청을 사실상 순차 처리해 동시성을 올려도 처리량이 거의 늘지 않았다.</p>
 <table>
   <caption>비전 경로 추가 비용 = 이미지 p50 − 같은 토큰 수 텍스트 p50 (ms, 동시성 1)</caption>
-  <thead><tr><th>비전 토큰</th><th class="num">vLLM</th><th class="num">SGLang</th><th class="num">MEI</th></tr></thead>
+  <thead><tr><th>비전 토큰</th><th class="num">vLLM</th><th class="num">SGLang</th></tr></thead>
   <tbody>
-    <tr><td>49 (224²)</td><td class="num">3.0</td><td class="num">3.4</td><td class="num">7.1</td></tr>
-    <tr><td>576 (768²)</td><td class="num">5.5</td><td class="num">29.1</td><td class="num">53.3</td></tr>
-    <tr><td>1,280</td><td class="num">9.3</td><td class="num">103.2</td><td class="num">—</td></tr>
+    <tr><td>49 (224²)</td><td class="num">3.0</td><td class="num">3.4</td></tr>
+    <tr><td>576 (768²)</td><td class="num">5.5</td><td class="num">29.1</td></tr>
+    <tr><td>1,280</td><td class="num">9.3</td><td class="num">103.2</td></tr>
   </tbody>
 </table>
 
