@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>경량화 얼굴 생성 모델의 깨진 프레임 탐지 — 곽동우 · Dongwoo Kwak</title>
+<meta name="description" content="경량화 얼굴 애니메이션 모델이 가끔 만드는 깨진 프레임을 히스토그램 차이로 탐지해 교체, 프레임당 0.85 ms로 경량화 모델을 유지하고 파드당 프로세스를 2배로 늘린 기록">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+<header class="masthead">
+  <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
+  <h1>경량화 얼굴 생성 모델의 깨진 프레임 탐지</h1>
+  <p class="sub">모델을 고치는 대신 출력 단에서 잡아내고 직전 프레임으로 대체하기 · 약 3분</p>
+  <nav><a href="../index.html">요약</a><a href="../index.html#index">목차</a><a href="../resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="../resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
+</header>
+<main>
+<dl class="facts">
+  <dt>소속</dt><dd>Klleon · Product AI 팀 (AI Engineer)</dd>
+  <dt>기간</dt><dd>2025.07 – 2025.08 (약 1개월)</dd>
+  <dt>역할 범위</dt><dd>탐지·교체 알고리즘 설계, 후보 비교, 엔진 내 구현과 최적화는 본인. 얼굴 생성 모델과 그 경량화는 사내 연구 조직의 결과물.</dd>
+  <dt>기술</dt><dd>C++17, OpenCV, CUDA, 실시간 영상 파이프라인 (25 FPS)</dd>
+  <dt>핵심 결과</dt><dd>탐지 비용 0.85 ms/frame, 경량화 모델 유지로 파드당 프로세스 2배</dd>
+</dl>
+
+<h2>배경</h2>
+<p>실시간 디지털 휴먼 엔진은 오픈소스 portrait animation 모델인 LivePortrait를 개조한 사내 얼굴 생성 모델로 매 프레임을 만든다. 서비스 비용을 낮추기 위해 이 모델의 경량화 버전을 쓰고 있었고, 경량화 모델은 GPU 자원을 덜 쓰는 만큼 한 파드에 더 많은 엔진 프로세스를 올릴 수 있다는 점이 핵심이었다.</p>
+
+<h2>문제</h2>
+<p>경량화 모델이 가끔 얼굴이 깨진 이미지를 생성하는 현상이 발견되었다. 빈도는 낮지만 실시간 영상에서 한 프레임이라도 깨지면 사용자에게 바로 보인다. 모델 재학습과 fine-tuning으로는 해결되지 않았다. 경량화를 포기하고 원래 모델로 돌아가는 방법도 있었지만, 그러면 파드당 수용량이 줄어 비용이 늘고 인프라 안정성도 다시 검토해야 했다. 그래서 모델은 그대로 두고, 출력 단에서 깨진 프레임을 탐지해 교체하는 방향을 택했다.</p>
+
+<h2>접근</h2>
+<p>탐지 지표로는 OpenCV 기반 pixel-wise histogram difference를 사용했다. 연속된 두 프레임 사이의 차이가 정상적인 표정·입 모양 변화보다 크게 튀면 깨진 프레임으로 판단한다. 탐지는 모델 추론 결과가 엔진으로 돌아온 직후, 송출 전에 엔진 파이프라인 안에서 수행하므로 별도 서비스나 추가 네트워크 왕복이 없다. 비교할 영역은 세 가지 후보를 실험한 뒤 얼굴 중앙 마스킹 영역을 채택했다.</p>
+<table>
+  <caption>비교 영역 후보</caption>
+  <thead><tr><th>안</th><th>비교 영역</th><th>결과</th></tr></thead>
+  <tbody>
+    <tr><td>1안</td><td>프레임 전체</td><td>미채택</td></tr>
+    <tr><td>2안</td><td>얼굴 ROI</td><td>미채택</td></tr>
+    <tr><td>3안</td><td>얼굴 중앙 마스킹 영역</td><td>채택</td></tr>
+  </tbody>
+</table>
+<p>엔진은 4프레임 단위 배치로 추론하므로, 판단 창은 이전 배치의 마지막 프레임과 현재 배치 4프레임을 합친 5장으로 잡았다. 이렇게 하면 배치의 첫 프레임도 비교 기준을 가진다. 차이가 임계값을 넘는 인덱스를 찾으면 해당 프레임을 바로 앞 프레임으로 대체한다. 배치의 마지막 프레임은 같은 기준으로는 검출이 불안정해 1.7× 보정값을 적용했다.</p>
+<pre class="diagram">
+  ┌──────┐   ┌──────┬──────┬──────┬──────┐
+  │  f0  │ → │  f1  │  f2  │  f3  │  f4  │
+  └──────┘   └──────┴──────┴──────┴──────┘
+  f0 = 이전 배치의 마지막 프레임
+  f1–f4 = 현재 배치 (4 frames), f4에는 1.7× 보정값 적용
+
+  d(f1,f0), d(f2,f1), d(f3,f2), d(f4,f3)
+  d = 얼굴 중앙 마스크 영역의 histogram difference
+
+  d(fi, fi-1) > threshold  →  fi를 fi-1로 대체  →  송출
+</pre>
+<p>대체 방식이 허용되는 근거는 프레임 속도다. 25 FPS에서 한 프레임은 40 ms이고, 이 정도 길이의 프레임 중복은 사람 눈으로 거의 인지되지 않는다. 깨진 얼굴이 노출되는 것보다 한 프레임이 반복되는 편이 훨씬 자연스럽다.</p>
+
+<h2>결과</h2>
+<table>
+  <caption>도입 전후 비교 (운영 엔진, 25 FPS 실시간 송출 기준)</caption>
+  <thead><tr><th>항목</th><th>대안: 경량화 포기</th><th>탐지·교체 도입</th></tr></thead>
+  <tbody>
+    <tr><td>사용 모델</td><td>원래 모델</td><td>경량화 모델 유지</td></tr>
+    <tr><td>파드당 엔진 프로세스</td><td class="num">1×</td><td class="num">2×</td></tr>
+    <tr><td>프레임당 추가 연산</td><td class="num">—</td><td class="num">0.85 ms</td></tr>
+    <tr><td>깨진 프레임 노출</td><td>—</td><td>직전 프레임으로 대체</td></tr>
+  </tbody>
+</table>
+<p>초기 구현 단계에서는 추가 비용을 프레임당 1–2 ms 이내로 보수적으로 잡았고, 이후 파이프라인 최적화를 거쳐 0.85 ms/frame으로 정리했다. 25 FPS의 프레임 예산 40 ms에 비해 작은 값이라 실시간성에는 영향이 없었다.</p>
+
+<h2>시행착오</h2>
+<p>재학습과 fine-tuning이 효과가 없다는 것이 확인된 뒤에는, 문제를 "깨진 프레임을 만들지 않기"에서 "깨진 프레임이 보이지 않게 하기"로 다시 정의하는 것이 현실적이었다. 영역 선택은 직관에 맡기지 않고 세 후보를 같은 조건에서 비교해 정했다. 배치 경계도 함정이었다. 배치 안에서만 비교하면 첫 프레임은 기준이 없고, 마지막 프레임은 별도 보정 없이는 검출이 흔들렸다.</p>
+
+<h2>배운 점</h2>
+<p>모델의 결함을 항상 모델 안에서 고칠 필요는 없다. 결함의 빈도와 사용자가 인지하는 방식을 따져 보면, 저렴한 후처리 하나로 비용 구조를 지킬 수 있다. 다만 판단 창과 경계 조건을 배치 구조에 맞춰 설계해야 한다는 점은 실제로 돌려 보기 전까지 드러나지 않았다.</p>
+</main>
+<div class="pager"><a href="09-triton-memory-leak.html">← 8개월 묵은 GPU 메모리 누적을 5일 만에 해결</a><a href="11-tts-batching-and-cost.html">TTS 동적 문장 배칭과 서빙 비용 정리 →</a></div>
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-11</footer>
+</div>
+</body>
+</html>

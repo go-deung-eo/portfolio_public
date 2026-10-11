@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>코드를 읽고, 재고, 격차를 설명하기 — 곽동우 · Dongwoo Kwak</title>
+<meta name="description" content="Qwen3.8-Flash-Next 포팅 후보 6개 엔진을 소스 수준에서 비교하고, 타사 엔진 대 vLLM 벤치마크를 정확도 관문과 roofline 분해로 설계한 뒤 smoke 단계에서 eager 강제 설정으로 인한 7배 TPOT 왜곡을 찾아낸 기록">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+<header class="masthead">
+  <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
+  <h1>코드를 읽고, 재고, 격차를 설명하기</h1>
+  <p class="sub">차세대 하이브리드 MoE 모델 포팅을 위한 6개 추론 엔진 조사와 엔진 비교 벤치마크 설계 · 약 4분</p>
+  <nav><a href="../index.html">요약</a><a href="../index.html#index">목차</a><a href="../resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="../resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
+</header>
+<main>
+<dl class="facts">
+  <dt>소속</dt><dd>Dnotitia · AI Group, Inference Optimization 파트</dd>
+  <dt>기간</dt><dd>2026.09 (조사 리포트 09.17 완료, 벤치마크 계획 09.18, smoke 측정 09.18 – 09.22)</dd>
+  <dt>역할 범위</dt><dd>6개 엔진 리포트 작성(AI 보조, 코드 인용과 결론은 본인 검증), 벤치마크 계획 설계, 두 서버에서의 smoke 측정과 문제 해결 본인 수행. 조사는 코드 리뷰이며 구현이 아님. 벤치마크 본 매트릭스는 아직 실행하지 않음.</dd>
+  <dt>기술</dt><dd>vLLM 0.23 / 0.28, SGLang, llama.cpp, MLX, CUDA Graph, roofline 분석, RTX 5090 (32 GB), RTX 6000 Ada (48 GB)</dd>
+  <dt>핵심 결과</dt><dd>공용 런처 설정이 eager 모드를 조용히 강제한 것을 발견 — 35B MoE의 vLLM TPOT 57 ms → 8.1 ms(약 7배). 27B FP8은 32 GB 카드에서 7개 기동 구성 중 1개만 동작함을 확인.</dd>
+</dl>
+
+<h2>배경</h2>
+<p>팀은 NPU 이식을 염두에 두고 Qwen3.8-Flash-Next를 서빙할 엔진을 골라야 했다. 이 모델은 48개 층 중 36개가 Gated DeltaNet(GDN), 12개가 sparse attention인 하이브리드 구조이고, MoE, 가속기 밖에 두는 51B 파라미터 n-gram 임베딩, MTP 모듈을 함께 쓴다. 어느 엔진이 이 구성요소를 실제로 어떻게 구현하는지, 그리고 엔진 사이의 속도 차가 어디서 오는지를 알아야 했다.</p>
+
+<h2>문제</h2>
+<p>엔진 비교 자료는 대부분 서로 다른 양자화 포맷과 실행 설정을 섞어 놓은 채 tok/s 하나로 결론을 낸다. 이 경우 격차가 커널에서 오는지, 프레임워크 오버헤드에서 오는지, 읽는 바이트 수 차이에서 오는지 구분할 수 없다. 기능 지원 여부도 README와 실제 코드가 다른 경우가 많았다.</p>
+
+<h2>접근 ① 소스 수준 조사</h2>
+<p>vLLM, SGLang, llama.cpp, MLX 기반 엔진, 그리고 타사 추론 엔진 2종(CPU–GPU 협업형 엣지 엔진, 자체 CUDA 커널의 단일 GPU 엔진)을 같은 템플릿으로 정리했다. 용어 → 요약 → 설계 철학 → 핵심 기술 3가지 → 아키텍처 → 성능 → NPU 시사점 순서이고, 부록에서 각 엔진의 Qwen3.8-Flash-Next 구현과 커널 백엔드를 다룬다. 모든 코드 인용은 고정 커밋의 file:line으로 남기고, 용어집은 스크립트로 생성해 6개 리포트에서 정의가 어긋나지 않게 했다.</p>
+<table>
+  <caption>공개 엔진의 구성요소별 구현 (2026.09 고정 커밋의 코드, 공개 레시피·CI 기준)</caption>
+  <thead><tr><th>구성요소</th><th>vLLM</th><th>SGLang</th><th>llama.cpp</th></tr></thead>
+  <tbody>
+    <tr><td>GDN</td><td>FLA Triton / FlashInfer / CuteDSL</td><td>Triton / FlashInfer / CuteDSL</td><td>융합 op + 청킹. CANN 백엔드는 미지원 op가 있어 CPU로 폴백</td></tr>
+    <tr><td>Sparse attention</td><td>Triton split-K + 융합 indexer</td><td>tilelang 등 다중 커널</td><td>마스크 기반 dense 계산</td></tr>
+    <tr><td>n-gram 테이블</td><td>pinned host 메모리 + Triton gather</td><td>pinned 또는 file mmap</td><td>mmap lazy read (SSD)</td></tr>
+    <tr><td>MTP</td><td>구현됨. 공개 레시피는 처리량 8–36% 악화로 기본 비활성 권장</td><td>구현됨. CI 기준 accept length 3.02</td><td>상류 미포함(별도 브랜치)</td></tr>
+    <tr><td>Ascend NPU</td><td>플러그인 스캐폴드만</td><td>GDN만 존재</td><td>위 CANN 참조</td></tr>
+  </tbody>
+</table>
+
+<h2>접근 ② 벤치마크 설계</h2>
+<p>타사 엔진과 vLLM을 Qwen3.6-27B(dense)와 35B-A3B(MoE)로 비교하되, 격차를 원인별로 나누는 것을 목표로 했다. 시간을 재기 전에 GSM8K 30문항과 코드 20문항으로 정답률을 맞추고, 엔진 간 차이가 5%p를 넘는 셀은 성능 수치를 싣지 않는다. 시나리오는 decode 지배(입력 128 / 출력 1024)부터 240K 장문맥, 30K 공유 prefix의 5턴 대화까지, 동시성 1–8로 잡았다.</p>
+<pre class="diagram">
+정확도 관문 (GSM8K 30 + code 20, 차이 ≤ 5%p)
+   │ 통과한 셀만
+   ▼
+c=1 decode → 대역폭 효율 = 달성 tok/s ÷ (HBM BW ÷ 토큰당 읽는 바이트)
+   ├─ 포맷 차이(FP8 / NVFP4 / 4-bit) 제거 → 엔진 효율만 비교
+   ├─ CUDA Graph on/off 차 → 런치·프레임워크 오버헤드
+   ├─ prefix cache on/off (multi-turn) / MTP on/off
+   └─ VRAM 분해: 가중치 / KV pool / 활성·그래프 workspace
+</pre>
+
+<h2>결과 (smoke 단계, vLLM 측)</h2>
+<table>
+  <caption>vLLM smoke 측정 (동시성 1, greedy, KV fp8, prefix cache off). 엔진 간 비교용 값이 아님</caption>
+  <thead><tr><th>장비 · 모델</th><th>조건</th><th class="num">TPOT</th><th>비고</th></tr></thead>
+  <tbody>
+    <tr><td>RTX 6000 Ada · 35B-A3B FP8</td><td>eager (런처 기본값으로 잘못 측정)</td><td class="num">57–62 ms</td><td>약 16 tok/s</td></tr>
+    <tr><td>RTX 6000 Ada · 35B-A3B FP8</td><td>CUDA Graph</td><td class="num">8.1 ms</td><td>약 121–123 tok/s, 약 7배</td></tr>
+    <tr><td>RTX 6000 Ada · 27B FP8</td><td>CUDA Graph / eager</td><td class="num">47.5 / 53.5 ms</td><td>dense는 13% 차이</td></tr>
+    <tr><td>RTX 6000 Ada · 27B FP8</td><td>입력 131,072 토큰</td><td class="num">51.8 ms</td><td>TTFT 85.4 s, 첫 시도 OOM</td></tr>
+    <tr><td>RTX 5090 · 27B FP8</td><td>7개 구성 중 유일한 성공(FULL graph, torch.compile 없음, util 0.95, max-num-seqs 1)</td><td class="num">22.7 ms</td><td>같은 조건 eager 28.9 ms</td></tr>
+  </tbody>
+</table>
+<p>MoE에서만 격차가 큰 이유는 층마다 라우팅, gather, grouped GEMM, scatter 같은 작은 커널이 많아 eager에서는 CPU 런치 비용이 decode 시간을 지배하기 때문이다. prefill 처리량은 두 모드가 거의 같아(12.4k vs 11.8k tok/s) 연산이 지배한다. 타사 엔진은 두 장비에서 비슷한 대역폭 효율을 보여, 장비 간 속도 차는 대부분 메모리 대역폭으로 설명되었다.</p>
+
+<h2>시행착오</h2>
+<p>활성 3B인 MoE가 27B dense보다 느린 값은 대역폭으로 설명되지 않았고, 원인은 공용 런처의 모델 계층에 남아 있던 <code>VLLM_ENFORCE_EAGER=true</code>였다. 이후 모든 축을 명령행에 명시하고 서버 로그의 non-default args를 결과에 첨부한다. 서버가 죽은 상태에서 <code>vllm bench serve</code>가 9개 점을 종료 코드 0으로 기록한 일도 있어 <code>/health</code> 가드와 완료 요청 수 검증을 추가했다. 대용량 체크포인트는 내려받기가 중간에 멈춰 Range 재개 다운로더와 SHA256 검증으로 받았고, <code>pkill -f</code>가 자신의 ssh 명령줄에 매치되어 세션을 끊는 문제도 겪었다. 32 GB 카드에서는 VL 체크포인트의 vision encoder 프로파일링과 torch.compile 경로의 추가 메모리 피크가 KV 공간을 잠식해 구성을 하나씩 줄여야 했다.</p>
+
+<h2>배운 점</h2>
+<p>엔진 비교에서 가장 큰 단일 요인은 엔진 자체가 아니라 설정 하나일 수 있다. 그래서 정확도 관문, 포맷 정규화, 명시적 플래그 기록이 측정보다 먼저 있어야 한다. 조사 리포트는 지원 여부를 README가 아니라 코드 위치로 확인할 때만 포팅 판단에 쓸 수 있었다.</p>
+</main>
+<div class="pager"><a href="05-vllm-serving-toolkit.html">← 크로스 디바이스 vLLM 스모크 하네스와 계층형 런처</a><a href="07-vllm-architecture-review.html">vLLM V1 아키텍처 리뷰 — Entry/API 경로 →</a></div>
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-11</footer>
+</div>
+</body>
+</html>

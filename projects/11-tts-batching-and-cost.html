@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TTS 동적 문장 배칭과 서빙 비용 정리 — 곽동우 · Dongwoo Kwak</title>
+<meta name="description" content="CUDA Graph로 업그레이드된 GPT-SoVITS 서버에 동적 문장 배칭을 붙여 요청 수 75% 감소(TTFB 손실 없음), 엔진/GPU 노드 분리로 AWS GPU 노드 40% 절감, Gemini 챗봇 모듈과 RAG·이미지 모델 연동 개선">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+<header class="masthead">
+  <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
+  <h1>TTS 동적 문장 배칭과 서빙 비용 정리</h1>
+  <p class="sub">빨라진 모델을 실제로 활용하는 요청 구조, 그리고 노드·토큰·데이터 비용 · 약 3분</p>
+  <nav><a href="../index.html">요약</a><a href="../index.html#index">목차</a><a href="../resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="../resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
+</header>
+<main>
+<dl class="facts">
+  <dt>소속</dt><dd>Klleon · Product AI 팀 (AI Engineer)</dd>
+  <dt>기간</dt><dd>2025.03 – 2026.01 (항목별: TTS 배칭 3주, Gemini 모듈 2주, RAG 기능 3일, 2세대 이미지 모델 연동 2025.08~)</dd>
+  <dt>역할 범위</dt><dd>엔진 측 TTS 배칭 로직, Gemini 챗봇 모듈, RAG 모듈 기능, 2세대 이미지 모델 연동은 본인 개발. TTS·이미지 모델 자체와 CUDA Graph 업그레이드는 사내 모델 담당 조직의 결과물. 노드 분리는 엔진–추론 서버 구조 변경 작업으로 참여했으며 클러스터 운영은 팀이 담당.</dd>
+  <dt>기술</dt><dd>C++17, Python 3.12, NVIDIA Triton Inference Server, GPT-SoVITS, LangChain, Gemini API, AWS, Kubernetes</dd>
+  <dt>핵심 결과</dt><dd>TTS 요청 수 −75% (100문장, TTFB 손실 없음) · AWS GPU 노드 −40% · 챗봇 토큰 단가 95% 이상 절감 · 사전 데이터 4 GB → 800 MB</dd>
+</dl>
+
+<h2>배경</h2>
+<p>실시간 디지털 휴먼은 STT → LLM → TTS → 이미지 생성 순서로 모델을 호출하고, 그 결과를 C++ 미디어 엔진이 영상으로 송출한다. 대화 한 번마다 여러 모델을 거치기 때문에, 각 단계의 호출 방식과 노드 배치가 그대로 지연 시간과 클라우드 비용이 된다. 이 페이지는 그중 TTS 호출 구조 개선을 중심으로, 같은 기간에 진행한 비용 관련 작업을 함께 정리한다.</p>
+
+<h2>문제</h2>
+<p>사내 GPT-SoVITS TTS 모델이 CUDA Graph 적용 버전으로 업그레이드되면서 긴 문장 구간에서 추론 시간이 크게 짧아졌다. 그러나 엔진은 여전히 LLM 출력을 문장 단위로 잘라 문장마다 TTS 요청을 하나씩 보내고 있었다. 짧은 요청이 많으면 요청당 고정 비용이 반복되고, 긴 입력에서 빨라진 모델의 장점도 살리지 못한다. 동시에 첫 음성이 나오는 시점(TTFB)은 대화 체감 품질을 좌우하므로 늦출 수 없었다.</p>
+
+<h2>접근</h2>
+<h3>동적 문장 배칭</h3>
+<p>엔진 측에 dynamic sentence batch request 로직을 추가했다. 문장을 하나씩 보내지 않고, 대기 중인 문장을 동적으로 묶어 하나의 요청으로 보낸다. 묶음 크기는 고정하지 않았고, 첫 음성 시점(TTFB)을 기존보다 늦추지 않는 것을 조건으로 두었다. 묶인 요청은 업그레이드된 모델이 빠르게 처리하는 긴 입력 구간에 해당한다.</p>
+<pre class="diagram">
+수정 전   LLM 출력 → [s1] [s2] [s3] [s4] ... [s100]   → TTS 요청 100회
+수정 후   LLM 출력 → [s1 ..] [.. s_k] [.. ] ...       → TTS 요청 25회  (−75%, 100문장 기준)
+                      └ 대기 중인 문장을 동적으로 묶음 → CUDA Graph 모델의 긴 입력 구간 활용
+</pre>
+<h3>비용 관련 작업</h3>
+<p>미디어 엔진과 GPU 추론 서버(Triton)를 서로 다른 노드 그룹으로 분리해, 엔진 프로세스 수와 GPU 추론 용량을 따로 맞출 수 있게 했다. 챗봇 모듈은 Gemini 2.5 Flash-Lite 기반으로 새로 개발하고 chat history와 token count 로직을 정리했다. LangChain 기반 RAG 모듈에는 .xlsx 문서 지원을 추가하고, 문서를 갱신해도 서버를 재시작하지 않도록 바꿨다. 2세대 이미지 모델을 엔진에 연동하면서 사전 준비 데이터 처리 과정을 새 모델에 맞게 고쳐 용량을 줄였다.</p>
+<table>
+  <caption>LLM API 단가 비교 (US$ / 1M tokens, 모듈 개발 당시 공개 요금 기준)</caption>
+  <thead><tr><th>모델</th><th class="num">Input</th><th class="num">Output</th><th class="num">합계</th></tr></thead>
+  <tbody>
+    <tr><td>o4-mini</td><td class="num">4.00</td><td class="num">16.00</td><td class="num">20.00</td></tr>
+    <tr><td>Claude Sonnet 4 (≤200K)</td><td class="num">3.00</td><td class="num">15.00</td><td class="num">18.00</td></tr>
+    <tr><td>Gemini 2.5 Flash-Lite</td><td class="num">0.10</td><td class="num">0.40</td><td class="num">0.50</td></tr>
+  </tbody>
+</table>
+
+<h2>결과</h2>
+<table>
+  <caption>항목별 전후 비교</caption>
+  <thead><tr><th>항목</th><th>수정 전</th><th>수정 후</th><th>조건</th></tr></thead>
+  <tbody>
+    <tr><td>TTS 요청 수</td><td class="num">100회</td><td class="num">25회 (−75%)</td><td>100문장 기준, TTFB 손실 없음</td></tr>
+    <tr><td>엔진 프로세스 : GPU 노드</td><td class="num">10 : 1</td><td class="num">50 : 3</td><td>같은 프로세스 수 기준 AWS GPU 노드 −40%</td></tr>
+    <tr><td>챗봇 토큰 단가</td><td>GPT 계열 (o4-mini)</td><td>Gemini 2.5 Flash-Lite</td><td>단가표 기준 95% 이상 절감</td></tr>
+    <tr><td>RAG 문서 갱신</td><td>서버 재시작 필요</td><td>재시작 없이 반영</td><td>.xlsx 형식 지원 추가</td></tr>
+    <tr><td>이미지 모델 사전 데이터</td><td class="num">4 GB</td><td class="num">800 MB (−80%)</td><td>2세대 이미지 모델 연동</td></tr>
+  </tbody>
+</table>
+<p>노드 비율 10:1에서 50:3으로의 변화는 GPU 노드 하나가 감당하는 엔진 프로세스가 10개에서 약 16.7개로 늘었다는 뜻이고, 같은 수의 프로세스를 운영할 때 필요한 GPU 노드가 40% 줄어든다. 챗봇 단가는 입력·출력 단가 합계 기준 o4-mini의 US$20.00 대비 US$0.50으로, 비율로는 95% 이상 낮다. 2세대 이미지 모델 연동에서는 사전 준비 데이터를 4 GB에서 800 MB로 줄였고, 연동 과정과 기존 Python 모델 구현과의 차이점을 문서로 정리해 팀에 남겼다.</p>
+
+<h2>시행착오</h2>
+<p>모델이 빨라졌다는 사실만으로는 서비스가 빨라지지 않았다. 호출하는 쪽이 문장 단위 요청 구조를 유지하는 한, 개선된 구간을 거의 쓰지 못한다. 반대로 요청을 무작정 크게 묶으면 첫 음성이 늦어진다. 그래서 요청 수 감소와 TTFB 유지를 한 쌍의 조건으로 놓고 검증했다. 챗봇 모델 교체도 단가표만으로 끝나지 않았다. 대화가 길어질수록 입력 토큰이 늘어나므로, 모델 교체와 함께 chat history와 token count 로직을 정리했다.</p>
+
+<h2>배운 점</h2>
+<p>모델 성능 개선은 호출 구조가 그 특성에 맞춰질 때 비로소 서비스 지표로 이어진다. 비용 작업은 단가, 요청 수, 노드 배치, 데이터 크기처럼 서로 다른 축에서 나오므로, 각 축의 기준값과 측정 조건을 먼저 고정해 두는 것이 비교를 정직하게 만든다.</p>
+</main>
+<div class="pager"><a href="10-abnormal-frame-detection.html">← 경량화 얼굴 생성 모델의 깨진 프레임 탐지</a><a href="12-triton-iaas-and-middleware.html">Triton 기반 모델 서빙 IaaS와 사내 미들웨어 →</a></div>
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-11</footer>
+</div>
+</body>
+</html>

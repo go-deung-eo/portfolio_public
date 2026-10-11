@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>곽동우 — LLM 추론·서빙 최적화 엔지니어 — 곽동우 · Dongwoo Kwak</title>
+<meta name="description" content="LLM 추론·서빙 최적화 엔지니어 곽동우의 포트폴리오. 핵심 성과 요약, 경력 개요, 13개 사례 연구 목차.">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="page">
+<header class="masthead">
+  <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
+  <h1>곽동우 — LLM 추론·서빙 최적화 엔지니어</h1>
+  <p class="sub">Dongwoo Kwak · Optimization Engineer, Dnotitia · 포트폴리오 요약과 목차</p>
+  <nav><a href="index.html">요약</a><a href="index.html#index">목차</a><a href="resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
+</header>
+<main>
+<h2>요약</h2>
+
+<p>
+모델이 실제 서비스에서 빠르고 정확하게 응답하도록 만드는 일을 한다. 지난 3년 동안 서로 다른 세 조직에서
+NVIDIA Triton 기반 모델 서빙 플랫폼(티맥스클라우드), 실시간 디지털 휴먼 생성 엔진(클레온),
+NPU 위 온디바이스 LLM 에이전트와 GPU 추론 엔진(디노티시아)을 다뤘다. 매번 질문은 같았다.
+주어진 하드웨어와 비용 안에서 지연시간을 어떻게 줄이고, 그 결과가 맞다는 것을 어떻게 증명할 것인가.
+</p>
+
+<p>
+일하는 방식은 세 가지로 요약된다. 첫째, 성능을 재기 전에 정확성을 먼저 검증한다. 벤치마크마다 참조 구현 대비
+코사인 유사도나 비트 단위 일치 같은 관문을 두고, 통과한 설정만 측정한다. 둘째, 증상이 아니라 메커니즘을 설명한다.
+"느리다"에서 멈추지 않고 어느 단계가 몇 ms를 쓰는지, 왜 그런지까지 분해한다. 셋째, 틀린 진단을 기록한다.
+아래 사례 연구마다 "시행착오" 절을 둔 이유다.
+</p>
+
+<div class="figures">
+  <div><b>−96%</b><span>NPU 서빙 에이전트 첫 턴 TTFT, 24.4초 → 0.9초 (세션 Warm-up)</span></div>
+  <div><b>102 → 13.5 GB</b><span>n-gram 임베딩 테이블을 2-bit 양자화로 단일 GPU에 상주</span></div>
+  <div><b>0건</b><span>8개월간 미해결이던 Triton GPU 메모리 누수 수정 후 OOM 크래시</span></div>
+  <div><b>−40%</b><span>미디어 엔진·추론 노드 분리로 줄인 AWS GPU 노드</span></div>
+  <div><b>3.1×</b><span>임베딩 서빙 엔진 비교에서 확인한 이미지 처리량 격차 (vLLM vs SGLang)</span></div>
+  <div><b>7×</b><span>사내 통신 프레임워크 JSON 직렬화 속도 (boost → glaze)</span></div>
+</div>
+
+<h2>경력 개요</h2>
+
+<table class="timeline">
+  <caption>역연대순. 상세 내용은 각 사례 연구 페이지에 있다.</caption>
+  <thead><tr><th>기간</th><th>소속 · 직무</th><th>주요 업무</th></tr></thead>
+  <tbody>
+    <tr><td>2026.02 – 현재</td><td>디노티시아<br>Optimization Engineer</td>
+        <td>NPU 온디바이스 LLM 에이전트 PoC의 에이전트–엔진 연동, 프리픽스 캐시 Warm-up, vLLM 기반 양자화 포팅,
+            에이전트 평가 하네스, 임베딩 서빙 벤치마크, 추론 엔진·모델 아키텍처 리서치</td></tr>
+    <tr><td>2025.03 – 2026.01</td><td>클레온<br>AI Engineer</td>
+        <td>실시간 디지털 휴먼 생성 엔진(C++17, Triton, CUDA) 개발·운영, 메모리 누수 해결, TTS 배칭, 인프라 비용 절감</td></tr>
+    <tr><td>2024.02 – 2024.10</td><td>티맥스클라우드<br>연구원</td>
+        <td>Triton 기반 모델 서빙 IaaS 개발, epoll 기반 미들웨어 프레임워크 개선, CI/CD 구축</td></tr>
+    <tr><td>2018.03 – 2024.02</td><td>연세대학교</td>
+        <td>경제학 학사, 컴퓨터과학 부전공 (운영체제 130명 중 10위)</td></tr>
+  </tbody>
+</table>
+
+<h2>이 포트폴리오를 읽는 방법</h2>
+
+<p>
+아래 목차의 각 항목은 하나의 문제를 다룬 사례 연구다. 모든 페이지는 같은 순서로 쓰였다.
+배경과 문제, 해결 메커니즘, 측정 결과, 시행착오, 배운 점. 맨 위의 사실 요약에는 "역할 범위"를 따로 적어
+본인이 직접 한 일과 팀의 성과를 구분했다. 전체를 읽는 데 약 44분이 걸린다.
+시간이 부족하다면 01(Warm-up), 03(에이전트 평가), 09(메모리 누수) 세 편을 권한다.
+</p>
+
+<div class="note"><strong>공개 범위</strong> 이 사이트는 공개 저장소에서 제공된다. 사내 시스템의 주소, 내부 코드명,
+협력사 하드웨어의 상세 사양, 제3자 엔진의 비공개 측정값은 싣지 않았다. 수치는 모두 본인이 직접 측정했거나
+작성한 문서에 근거한다.</div>
+
+<h2 id="index">목차</h2>
+
+<ol class="toc">
+<li><span><a class="title" href="projects/01-warmup-ttft.html">세션 Warm-up으로 첫 턴 TTFT 96% 단축</a><span class="desc">NPU 위 Qwen3.6-35B-A3B 에이전트 런타임에서 첫 턴 TTFT 24.4 s → 0.9 s. 원인은 엔진이 아니라 프롬프트 바이트였다.</span></span><span class="meta">2026.07 · 3분</span></li>
+<li><span><a class="title" href="projects/02-ngram-table-2bit.html">102 GB n-gram 테이블을 GPU 한 장에 올리기</a><span class="desc">Qwen3.8-Flash-Next의 n-gram 임베딩 테이블(102 GB)을 13.5 GiB로 HBM에 상주시키고, 조회는 bf16 gather보다 빠르게(0.343 vs 0.507 ms) 만들었다.</span></span><span class="meta">2026.10 · 4분</span></li>
+<li><span><a class="title" href="projects/03-agent-eval-harness.html">엔드포인트가 아니라 에이전트를 평가하기</a><span class="desc">에이전트 스택 전체를 pass@1로 채점하는 하네스로 8개·11개 모델을 비교하고, 다국어 깨짐 토큰의 원인을 vLLM 기본 temperature 1.0으로 규명했다.</span></span><span class="meta">2026.06 – 2026.07 · 3분</span></li>
+<li><span><a class="title" href="projects/04-embedding-serving-benchmark.html">임베딩 서빙 엔진 비교, 정합성 검증부터</a><span class="desc">사내 2B 비전-언어 임베딩 모델을 세 엔진으로 서빙해 비교하고, 경고 없이 벡터를 망가뜨리는 요청 경로를 찾아 안전한 서빙 방법을 정했다.</span></span><span class="meta">2026.08 – 2026.09 · 3분</span></li>
+<li><span><a class="title" href="projects/05-vllm-serving-toolkit.html">크로스 디바이스 vLLM 스모크 하네스와 계층형 런처</a><span class="desc">7개 모델을 RTX 6000 Ada와 GB10에서 같은 절차로 측정하는 스모크 하네스, 플래그 파일 5계층으로 vLLM을 띄우는 런처, 요청을 기록하는 프록시를 만들고 이후 벤치마크 캠페인의 공통 기반으로 쓴 기록</span></span><span class="meta">2026.06 · 3분</span></li>
+<li><span><a class="title" href="projects/06-engine-survey-and-benchmark.html">코드를 읽고, 재고, 격차를 설명하기</a><span class="desc">Qwen3.8-Flash-Next 포팅 후보 6개 엔진을 소스 수준에서 비교하고, 타사 엔진 대 vLLM 벤치마크를 정확도 관문과 roofline 분해로 설계한 뒤 smoke 단계에서 eager 강제 설정으로 인한 7배 TPOT 왜곡을 찾아낸 기록</span></span><span class="meta">2026.09 · 4분</span></li>
+<li><span><a class="title" href="projects/07-vllm-architecture-review.html">vLLM V1 아키텍처 리뷰 — Entry/API 경로</a><span class="desc">3인 스터디 프로그램에서 Entry/API 영역을 맡아 OpenAI 호환 요청의 전 경로, SamplingParams 매핑, 기동 메모리 프로파일링, 업스트림 KV offloading 논의를 코드 위치 기준으로 정리하고 멀티모달 파서의 오류 경로를 로컬에서 수정한 기록</span></span><span class="meta">2026.03 – 2026.06 · 4분</span></li>
+<li><span><a class="title" href="projects/08-model-architecture-seminars.html">SOTA 모델 아키텍처 세미나 시리즈</a><span class="desc">포팅 대상 모델을 팀이 이해하도록 5개 모델 계열 20페이지의 아키텍처 리뷰와 사내 세미나를 진행한 방법과, 공개 자료로 다시 쓴 예시 하나(51B 파라미터 n-gram 테이블을 가속기 밖에 두는 방식)</span></span><span class="meta">2026.09 – 2026.10 · 4분</span></li>
+<li><span><a class="title" href="projects/09-triton-memory-leak.html">8개월 묵은 GPU 메모리 누적을 5일 만에 해결</a><span class="desc">실시간 디지털 휴먼 엔진에서 3일마다 파드를 재시작하게 만들던 GRAM 누적의 원인을 Triton shared memory 등록 해제 누락으로 규명하고 OOM을 0건으로 만든 기록</span></span><span class="meta">2025.06 · 3분</span></li>
+<li><span><a class="title" href="projects/10-abnormal-frame-detection.html">경량화 얼굴 생성 모델의 깨진 프레임 탐지</a><span class="desc">경량화 얼굴 애니메이션 모델이 가끔 만드는 깨진 프레임을 히스토그램 차이로 탐지해 교체, 프레임당 0.85 ms로 경량화 모델을 유지하고 파드당 프로세스를 2배로 늘린 기록</span></span><span class="meta">2025.07 – 2025.08 · 3분</span></li>
+<li><span><a class="title" href="projects/11-tts-batching-and-cost.html">TTS 동적 문장 배칭과 서빙 비용 정리</a><span class="desc">CUDA Graph로 업그레이드된 GPT-SoVITS 서버에 동적 문장 배칭을 붙여 요청 수 75% 감소(TTFB 손실 없음), 엔진/GPU 노드 분리로 AWS GPU 노드 40% 절감, Gemini 챗봇 모듈과 RAG·이미지 모델 연동 개선</span></span><span class="meta">2025.03 – 2026.01 · 3분</span></li>
+<li><span><a class="title" href="projects/12-triton-iaas-and-middleware.html">Triton 기반 모델 서빙 IaaS와 사내 미들웨어</a><span class="desc">Tmax Cloud에서 Triton core C API를 사내 epoll 프레임워크에 포팅해 비동기 추론 엔드포인트를 만들고, JSON 라이브러리를 glaze로 교체해 쓰기 7배·읽기 3배를 얻은 기록과 수습 과제</span></span><span class="meta">2024.02 – 2024.10 · 3분</span></li>
+<li><span><a class="title" href="projects/13-tools-and-background.html">도구, 학습, 그리고 배경</a><span class="desc">Neovim 환경 자동화, 백준 풀이 스캐폴드, IRC 서버 epoll 전환 같은 개인 도구와 경제학 전공·42 Seoul·공군·조정부로 이어진 배경</span></span><span class="meta">2012 – 현재 · 2분</span></li>
+</ol>
+
+<h2>연락처</h2>
+<p>
+이메일 <a href="mailto:dong0881414@gmail.com">dong0881414@gmail.com</a> ·
+GitHub <a href="https://github.com/monkeyKing001">github.com/monkeyKing001</a> ·
+이력서 <a href="resume/Resume_Dongwoo_Kwak_KO.pdf">국문 PDF</a>, <a href="resume/Resume_Dongwoo_Kwak_EN.pdf">English PDF</a>
+</p>
+</main>
+
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-11</footer>
+</div>
+</body>
+</html>

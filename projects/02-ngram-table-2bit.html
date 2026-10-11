@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>102 GB n-gram 테이블을 GPU 한 장에 올리기 — 곽동우 · Dongwoo Kwak</title>
+<meta name="description" content="Qwen3.8-Flash-Next의 n-gram 임베딩 테이블(102 GB)을 13.5 GiB로 HBM에 상주시키고, 조회는 bf16 gather보다 빠르게(0.343 vs 0.507 ms) 만들었다.">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+<header class="masthead">
+  <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
+  <h1>102 GB n-gram 테이블을 GPU 한 장에 올리기</h1>
+  <p class="sub">2-bit 룩업테이블 양자화의 vLLM 포팅과 Triton gather-decode 커널 · 약 4분</p>
+  <nav><a href="../index.html">요약</a><a href="../index.html#index">목차</a><a href="../resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="../resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
+</header>
+<main>
+<dl class="facts">
+  <dt>소속</dt><dd>Dnotitia · Inference Optimization 파트</dd>
+  <dt>기간</dt><dd>2026.10 (약 1주)</dd>
+  <dt>역할 범위</dt><dd>양자화 알고리즘과 논문은 동료의 연구다. 본인은 원본 테이블 확보·검증, vLLM 0.31 포팅, fused Triton 디코드 커널, 마이크로벤치마크와 품질(KL) 측정을 맡았다. 구현은 AI 코딩 에이전트를 지휘해 진행했고 수치 검증은 본인이 했다. 코드는 아직 내부 브랜치 상태다.</dd>
+  <dt>기술</dt><dd>vLLM 0.31, Triton, PyTorch, CUDA (RTX 5090, H200)</dd>
+  <dt>핵심 결과</dt><dd>102.4 GB 테이블을 13.5 GiB로 HBM에 상주, 디코드 bit-exact, 65,536 토큰 조회 0.507 → 0.343 ms</dd>
+</dl>
+
+<h2>배경</h2>
+<p>Qwen3.8-Flash-Next는 앞단 층에 해시 기반 bigram/trigram n-gram 임베딩 테이블을 둔다. 16개 head, 약 3.2억 행 × 160차원이고 bf16 기준 102.4 GB다. 토큰마다 16행을 읽는다. vLLM은 이 테이블을 HBM에 두거나, pinned host memory에 두고 UVA로 읽는 두 경로를 제공한다. 공식 FP8 체크포인트도 테이블만 51.2 GB라 32 GB GPU에는 들어가지 않는다.</p>
+
+<h2>문제</h2>
+<p>RTX 5090에서 조회 지연을 먼저 쟀다. 65,536 토큰 기준 HBM gather는 0.505 ms, pinned host 경로는 21.7 ms로 약 43배 느렸다. host 경로는 유효 15.5 GB/s 수준의 PCIe에 묶인다. 그렇다면 fp8로 바이트를 반으로 줄이면 빨라질까. HBM 경로에서 bf16과 fp8은 0.505 ms와 0.504 ms로 같았다. 160–320 B짜리 행을 무작위로 모으는 gather는 대역폭이 아니라 메모리 트랜잭션 수가 지연을 결정한다. 정밀도를 낮춰도 조회는 빨라지지 않는다. 남는 이득은 테이블을 HBM에 넣을 수 있느냐 하나이고, 그러려면 파라미터당 약 2 bit(12.8 GB)까지 내려가야 한다.</p>
+
+<table>
+  <caption>조회 지연, RTX 5090, 1/8 테이블(4,000만 행), 토큰당 16행, 균등 랜덤, 중앙값</caption>
+  <thead><tr><th>토큰</th><th class="num">bf16 HBM</th><th class="num">fp8 HBM</th><th class="num">bf16 pinned host</th></tr></thead>
+  <tbody>
+    <tr><td>4,096</td><td class="num">0.038 ms</td><td class="num">0.038 ms</td><td class="num">1.08 ms</td></tr>
+    <tr><td>65,536</td><td class="num">0.505 ms</td><td class="num">0.504 ms</td><td class="num">21.7 ms</td></tr>
+  </tbody>
+</table>
+
+<h2>접근</h2>
+<p><strong>원본부터 검증.</strong> 128개 shard(102.4 GB)를 받아 검증하고, 해시 주소 계산을 HF 구현과 bit-exact로 재구현했다. 행 kurtosis 2.946(Gaussian 기대 2.963), 상위 1% 행이 읽기의 48.7%를 차지한다는 통계로 논문 수치를 재현해 이후 측정의 기준을 확보했다. 논문 방식을 따라 만든 레퍼런스 코덱의 행 단위 상대 MSE는 0.072로, RTN 2-bit(0.222)의 약 1/3이었다.</p>
+<p><strong>포팅 지점.</strong> vLLM의 기존 FP8 경로는 저장 dtype 그대로 gather한 뒤 dequantize하는 2단계다. 여기에 embedding method 서브클래스 하나를 더했다. 행당 42 B 레코드(bf16 320 B의 1/7.6)를 uint8 텐서로 들고, 체크포인트 로더와 TP 경로 all-reduce가 uint8을 받도록 고쳤다. 변경은 기존 3개 파일 +83/−9줄과 신규 디코더 93줄이다.</p>
+<p><strong>fused 커널.</strong> gather와 디코드를 Triton 커널 하나로 합쳤다. program 하나가 4행을 맡고, 행 안의 80 step을 16-bit 슬라이딩 윈도와 룩업 테이블로 병렬 디코드한다. 디코드 연산은 메모리 대기 시간 안에 숨는다.</p>
+
+<pre class="diagram">
+bf16      ids ─▶ gather 16행 × 320 B ───────────────────────────▶ bf16 임베딩
+                 (지연 = 트랜잭션 수)
+
+2-bit     ids ─▶ gather 16행 × 42 B ─▶ LUT 디코드, 행당 80 step 병렬 ─▶ bf16 임베딩
+                 └──────────── 하나의 Triton 커널 ────────────┘
+                 바이트 7.6× 감소, 디코드 ALU는 메모리 대기에 숨음
+</pre>
+
+<h2>결과</h2>
+<table>
+  <caption>RTX 5090. 조회는 1/8 테이블 합성 벤치, 메모리는 실제 3.2억 행 테이블을 vLLM 모듈로 로드한 값</caption>
+  <thead><tr><th>항목</th><th class="num">bf16</th><th class="num">2-bit fused</th></tr></thead>
+  <tbody>
+    <tr><td>HBM 조회, 65,536 토큰</td><td class="num">0.507 ms</td><td class="num">0.343 ms</td></tr>
+    <tr><td>pinned host 조회, 65,536 토큰</td><td class="num">21.7 ms</td><td class="num">12.15 ms</td></tr>
+    <tr><td>전체 테이블 GPU 메모리</td><td class="num">102.4 GB (적재 불가)</td><td class="num">13.5 GiB</td></tr>
+    <tr><td>디코드 정확성 (torch 레퍼런스, 배포 디코더 대비)</td><td class="num">—</td><td class="num">bit-exact</td></tr>
+    <tr><td>단위 테스트 (upstream 70 + 신규 6)</td><td class="num">—</td><td class="num">76 passed</td></tr>
+  </tbody>
+</table>
+
+<p>HBM 경로는 디코드를 포함하고도 bf16 gather보다 32% 빠르다. 옮기는 바이트가 7.6배 줄었고, 디코드 연산은 메모리 대기 안에서 처리되기 때문이다. pinned 경로도 1.8배 빨라졌지만 PCIe 트랜잭션 지연이 바닥에 남아 HBM 상주를 대신하지는 못한다.</p>
+
+<p>모델 전체 출력 분포 기준 품질(KL divergence)도 FP8, RTN 3-bit, RTN 2-bit와 함께 비교했다. 이 측정은 미공개 연구와 사내 환경에 묶여 있어 수치는 싣지 않는다. 요약하면 같은 2-bit대에서 단순 반올림(RTN)보다 오차가 뚜렷이 작았고, 이 결과가 포팅을 계속할 근거가 됐다.</p>
+<div class="note"><strong>하지 않은 것</strong> 백본을 포함한 <code>vllm serve</code> 전체 기동(TP4), CUDA graph 캡처, 서빙 수준 처리량·TTFT, 과제 점수(lm_eval)는 측정하지 않았다. 양자화 테이블이 공개되지 않았고 저자와 조율 전이라 upstream PR도 내지 않았다.</div>
+
+<h2>시행착오</h2>
+<p>fp8이면 빨라질 것이라는 가정은 측정 한 번에 깨졌고, 커널 목표를 "bf16 gather 시간 이내"로 다시 잡았다. 해시는 config의 <code>eos_token_id</code>(248044)를 쓰는데 토크나이저 eos(248046)와 달라서, 이를 놓치면 주소가 조용히 어긋난다. KL 측정에서는 <code>torch.no_grad</code>를 빠뜨리면 활성화가 GPU당 50 GiB까지 차서 OOM이 났다. vLLM 실제 pinned 경로는 gather, prefetch 버퍼, 디코드가 커널 두 개와 스트림 동기화로 나뉘어 fused 벤치보다 느리다(16K 토큰 6.05 ms 대 3.08 ms). 디코드를 UVA gather 커널에 합치는 것이 다음 과제다.</p>
+
+<h2>배운 점</h2>
+<p>작은 행을 무작위로 모으는 gather는 트랜잭션 바운드라 정밀도를 낮춰도 빨라지지 않는다. 이 경우 압축의 가치는 속도가 아니라 테이블의 위치를 host에서 HBM으로 옮기는 데 있었다. 측정 전에 원본 통계를 논문과 맞춰 둔 것이 이후 숫자를 믿을 근거가 됐다.</p>
+</main>
+<div class="pager"><a href="01-warmup-ttft.html">← 세션 Warm-up으로 첫 턴 TTFT 96% 단축</a><a href="03-agent-eval-harness.html">엔드포인트가 아니라 에이전트를 평가하기 →</a></div>
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-11</footer>
+</div>
+</body>
+</html>

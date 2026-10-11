@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triton 기반 모델 서빙 IaaS와 사내 미들웨어 — 곽동우 · Dongwoo Kwak</title>
+<meta name="description" content="Tmax Cloud에서 Triton core C API를 사내 epoll 프레임워크에 포팅해 비동기 추론 엔드포인트를 만들고, JSON 라이브러리를 glaze로 교체해 쓰기 7배·읽기 3배를 얻은 기록과 수습 과제">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+<header class="masthead">
+  <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
+  <h1>Triton 기반 모델 서빙 IaaS와 사내 미들웨어</h1>
+  <p class="sub">epoll 이벤트 드리븐 C++ 프레임워크 위에 Triton core를 올리기 · 약 3분</p>
+  <nav><a href="../index.html">요약</a><a href="../index.html#index">목차</a><a href="../resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="../resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
+</header>
+<main>
+<dl class="facts">
+  <dt>소속</dt><dd>Tmax Cloud · 미들웨어 연구본부 (연구원)</dd>
+  <dt>기간</dt><dd>2024.02 – 2024.10 (수습 과제 2024.02–05, 서빙 IaaS 2024.05–09)</dd>
+  <dt>역할 범위</dt><dd>서빙 IaaS의 네트워크 엔드포인트, Triton core C API 포팅, tensor binary 확장, JSON 라이브러리 교체, GitLab CI 파이프라인과 E2E 테스트 클라이언트는 본인 개발. 플랫폼 전체 설계와 사내 프레임워크·프로토콜은 팀 자산. 수습 과제(채팅 서버)는 1인 수행.</dd>
+  <dt>기술</dt><dd>Linux epoll, C++20, Clang++, meson, conan, NVIDIA Triton Inference Server (core C API), glaze, docker-compose, GitLab CI, Python</dd>
+  <dt>핵심 결과</dt><dd>서빙 IaaS v0.0.0 – v0.2.0 개발 · JSON 직렬화(쓰기) 7×, 역직렬화(읽기) 3× · 빌드–이미지–E2E–배포 4단계 CI 자동화</dd>
+</dl>
+
+<h2>배경</h2>
+<p>Tmax Cloud는 NVIDIA Triton Inference Server를 추론 엔진으로 쓰는 모델 서빙 클라우드 플랫폼을 만들고 있었다. 외부 요청은 사내 서버 프레임워크가 받는다. 이 프레임워크는 Linux epoll 기반 이벤트 드리븐 멀티스레드 구조이고, 사내 자체 L7 통신 프로토콜을 쓴다. 입사 후 수습 기간에는 이 프레임워크를 분석하며 채팅 서버를 만들었고, 정규직 전환 후 서빙 IaaS의 추론 서버 컴포넌트를 맡았다.</p>
+<pre class="diagram">
+[Main (event) thread]
+  socket ┐
+  socket ┼─▶ epoll loop (NioSelector)
+  socket ┘      │  (1) I/O 발생 (read / write)
+                ▼
+             ClientIdTable: socket fd로 handler 매칭
+                │  (2)
+                ▼
+             socket handler
+                │  (3) service callback 전달
+================│==========================================
+[Worker Thread pool]
+                ▼
+             WorkerThread ─▶ Service Manager ─▶ Service Callback
+</pre>
+
+<h2>문제</h2>
+<p>Triton은 보통 자체 HTTP/gRPC 서버로 쓰지만, 이 플랫폼은 요청을 사내 프레임워크와 프로토콜로 받아야 했다. 따라서 Triton을 별도 서버로 두지 않고 core C API로 직접 호출해야 했고, 이벤트 루프를 막지 않으려면 추론·헬스 체크·통계 조회를 모두 비동기로 다뤄야 했다. 또 서빙 경로의 모든 메시지가 거치는 프레임워크의 JSON 처리가 오래된 boost::property_tree 기반이어서, 성능과 유지보수 양쪽에서 최신화가 필요했다.</p>
+
+<h2>접근</h2>
+<h3>Triton core C API 포팅</h3>
+<p>Triton core의 inference, health check, statistics report 호출을 사내 엔드포인트에 연결했다. core API는 응답을 콜백으로 돌려주므로, 콜백에서 std::promise를 채우고 호출 측은 std::future로 결과를 받도록 감쌌다. 워커 스레드는 결과가 준비될 때까지 이벤트 루프를 붙잡지 않는다. 텐서 값을 JSON 숫자 배열로 풀어 쓰는 대신 원본 바이트를 바이너리로 실어 보내는 tensor binary encoding 확장도 프레임워크에 구현했다.</p>
+<h3>JSON 라이브러리 교체</h3>
+<p>boost::property_tree는 모든 값을 문자열 노드 트리로 다루는 범용 구조라 변환 비용이 크다. 이를 compile-time reflection으로 C++ 구조체를 직접 읽고 쓰는 glaze로 교체했다. 프레임워크의 JSON 직렬화·역직렬화 기능을 이 라이브러리 기준으로 다시 작성했다.</p>
+<h3>CI 파이프라인</h3>
+<p>GitLab CI를 새로 구성했다. 로컬 빌드, 컨테이너 이미지 빌드, 기능 테스트(E2E), 배포의 4단계이며, E2E 단계에서 쓰는 Python 테스트 클라이언트를 직접 작성했다.</p>
+
+<h2>결과</h2>
+<table>
+  <caption>주요 결과 (JSON 수치는 프레임워크 메시지 기준 사내 측정)</caption>
+  <thead><tr><th>항목</th><th>이전</th><th>이후</th></tr></thead>
+  <tbody>
+    <tr><td>JSON 직렬화 (쓰기)</td><td>boost::property_tree</td><td class="num">glaze, 7×</td></tr>
+    <tr><td>JSON 역직렬화 (읽기)</td><td>boost::property_tree</td><td class="num">glaze, 3×</td></tr>
+    <tr><td>Triton 호출</td><td>—</td><td>core C API 비동기 호출 (inference / health / statistics)</td></tr>
+    <tr><td>CI</td><td>CI 파이프라인 없음</td><td>4단계 자동화 + Python E2E 클라이언트</td></tr>
+    <tr><td>서빙 IaaS 버전</td><td class="num">v0.0.0</td><td class="num">v0.2.0</td></tr>
+  </tbody>
+</table>
+
+<h3>수습 과제: 채팅 서버와 교육 자료</h3>
+<p>수습 기간에는 사내 프로토콜 기반 실시간 채팅 서버와 CLI 클라이언트를 1인으로 개발했다. 과제 범위 밖으로 IRC 프로토콜을 참고해 강퇴(KICK)와 채팅방 주제 설정(TOPIC)을 추가했고, message·topic·kick 서비스가 broadcasting 서비스를 연쇄 호출하도록 구성해 코드 재사용을 늘렸다. non-blocking accept도 조사해 발표했다. accept 이벤트 한 번에 여러 클라이언트 연결을 받을 수 있다는 점을 분석하고, Linux kernel의 socket 대기 큐 구조를 바탕으로 DDoS 공격 가능성과 예방책을 정리했다. 본인의 수습 발표 자료를 바탕으로 수습 팀원 교육 자료의 디자인과 구성도 도표 중심으로 전면 개선했다.</p>
+
+<h2>시행착오</h2>
+<p>non-blocking 소켓에서는 준비 이벤트 하나가 연결 하나를 뜻하지 않는다. 대기 큐에 쌓인 연결을 한 번에 하나씩만 꺼내면 연결이 큐에 남고, 반대로 무제한으로 꺼내면 공격 트래픽에 이벤트 루프가 묶일 수 있다. 이 양면은 API 문서만으로는 보이지 않고, 커널의 socket 대기 큐 동작까지 내려가서야 설명이 되었다. glaze는 구조체 정의를 기준으로 동작하므로, property_tree처럼 경로 문자열로 값을 꺼내던 코드는 그대로 옮길 수 없고 메시지마다 구조체 매핑을 명시해야 한다. 라이브러리 교체는 곧 메시지 형식을 코드로 고정하는 작업이기도 했다.</p>
+
+<h2>배운 점</h2>
+<p>콜백 기반 C API를 이벤트 루프 프레임워크에 붙일 때는, 결과를 기다리는 위치를 어디에 둘지가 설계의 핵심이다. 라이브러리 교체 같은 기반 작업은 서빙 경로 전체에 누적 효과를 내므로, 측정 가능한 단위로 쪼개 전후를 비교해 두는 편이 설득력이 있다.</p>
+</main>
+<div class="pager"><a href="11-tts-batching-and-cost.html">← TTS 동적 문장 배칭과 서빙 비용 정리</a><a href="13-tools-and-background.html">도구, 학습, 그리고 배경 →</a></div>
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-11</footer>
+</div>
+</body>
+</html>

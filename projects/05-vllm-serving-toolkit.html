@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>크로스 디바이스 vLLM 스모크 하네스와 계층형 런처 — 곽동우 · Dongwoo Kwak</title>
+<meta name="description" content="7개 모델을 RTX 6000 Ada와 GB10에서 같은 절차로 측정하는 스모크 하네스, 플래그 파일 5계층으로 vLLM을 띄우는 런처, 요청을 기록하는 프록시를 만들고 이후 벤치마크 캠페인의 공통 기반으로 쓴 기록">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+<header class="masthead">
+  <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
+  <h1>크로스 디바이스 vLLM 스모크 하네스와 계층형 런처</h1>
+  <p class="sub">같은 측정을 어느 장비에서나 재현하기 위한 serving 도구 · 약 3분</p>
+  <nav><a href="../index.html">요약</a><a href="../index.html#index">목차</a><a href="../resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="../resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
+</header>
+<main>
+<dl class="facts">
+  <dt>소속</dt><dd>Dnotitia · AI Group, Inference Optimization 파트</dd>
+  <dt>기간</dt><dd>2026.06.01 – 2026.06.25 (하네스 1주, 런처 분리·버전 관리 2주)</dd>
+  <dt>역할 범위</dt><dd>하네스·런처·프록시의 설계, 구현, 측정, 리포트 생성까지 본인 단독(두 저장소 모두 본인 커밋). 장비는 팀 공용 서버.</dd>
+  <dt>기술</dt><dd>vLLM 0.13.0, Bash, Python stdlib(http.client, SSE 파싱), FastAPI, nvidia-smi</dd>
+  <dt>핵심 결과</dt><dd>7개 모델 × 2개 장비의 TTFT/TPOT/처리량·툴콜 결과를 같은 절차로 측정. RTX 6000 Ada가 GB10 대비 지연 약 3–6배 빠름. 런처는 이후 4개 캠페인에서 재사용.</dd>
+</dl>
+
+<h2>배경</h2>
+<p>사내에는 RTX 6000 Ada 워크스테이션과 DGX Spark(GB10)처럼 메모리 구조가 다른 장비가 섞여 있었다. 새 장비나 새 모델이 들어올 때마다 "이 조합에서 vLLM이 정상적으로 뜨는지, 툴콜이 되는지, 대략 얼마나 빠른지"를 확인해야 했지만, 모델별 실행 스크립트가 사람마다 달라 결과를 서로 비교할 수 없었다.</p>
+
+<h2>문제</h2>
+<p>같은 모델이라도 실행 플래그, 시드, 워밍업 여부, TTFT를 어디서 재는지가 다르면 수치가 맞지 않는다. 또 모델 기동에만 20–60초가 걸리고 실패 원인이 서버 로그에만 남기 때문에, 수동으로 반복하면 측정보다 기동과 정리에 시간이 더 들었다.</p>
+
+<h2>접근</h2>
+<p>측정 절차를 코드로 고정하는 하네스와, 실행 설정을 파일 계층으로 분리하는 런처 두 가지로 나누었다. 하네스는 <code>models.txt</code>의 모델을 차례로 <code>vllm serve --seed 0</code>으로 띄우고, <code>/v1/models</code>가 200을 줄 때까지의 시간을 cold start로 따로 기록한다. 이후 워밍업 1개(집계 제외)와 측정 메시지 4개를 SSE로 보내 토큰 단위 시각을 남기며, 마지막 메시지는 <code>get_weather</code> 툴콜의 함수명과 인자 JSON을 검증한다. 결과는 장비 이름으로 디렉터리를 나누어 저장하고, 장비 간 비교표 <code>COMPARE.md</code>를 자동 생성한다.</p>
+<pre class="diagram">
+vllm-runner serve &lt;model&gt;
+  플래그 해석 (뒤 계층이 앞 계층을 덮어씀)
+    1 _common.flags          모든 모델·모든 호스트 (seed 0, greedy, util 0.92)
+    2 _family/&lt;family&gt;.flags  모델 계열 (tool parser 등)
+    3 &lt;model&gt;.flags           모델별
+    4 &lt;host&gt;/_common.flags    호스트별
+    5 &lt;host&gt;/&lt;model&gt;.flags    호스트 × 모델
+  └─ show: 적용된 계층과 최종 명령을 출력만 하고 종료
+
+client ──▶ proxy_logger :8000 ──▶ vLLM :8001
+                 └─ 요청·응답(SSE 포함)을 NDJSON으로 기록
+</pre>
+<p>런처는 하네스의 플래그 처리 부분을 순수 bash 도구로 분리한 것이다. 각 계층에는 상위 계층과 달라지는 값만 쓰게 해서, 호스트를 바꿀 때 4·5계층만 추가하면 되도록 했다. vLLM 버전은 venv 이름(<code>vllm-&lt;version&gt;</code>)으로 고르고, 맞는 venv가 없으면 다른 버전으로 대체하지 않고 중단한다. 앞단의 FastAPI 프록시는 클라이언트가 실제로 보낸 요청과 받은 응답을 그대로 남겨, 에이전트 평가처럼 요청 내용이 중요한 실험에서 근거 자료가 되었다.</p>
+
+<h2>결과</h2>
+<table>
+  <caption>장비 간 비교 (vLLM 0.13.0, seed 0, 측정 메시지 4개 평균, TTFT ms / TPOT ms / 출력 tok/s)</caption>
+  <thead><tr><th>모델</th><th>RTX 6000 Ada</th><th>GB10 (DGX Spark)</th></tr></thead>
+  <tbody>
+    <tr><td>ministral-3-3b</td><td class="num">27.9 / 6.6 / 134.4</td><td class="num">109.6 / 17.7 / 46.8</td></tr>
+    <tr><td>ministral-3-8b</td><td class="num">48.7 / 12.4 / 72.5</td><td class="num">171.7 / 37.3 / 23.4</td></tr>
+    <tr><td>ministral-3-14b</td><td class="num">69.8 / 18.4 / 48.6</td><td class="num">271.0 / 59.2 / 14.7</td></tr>
+    <tr><td>qwen3-4b</td><td class="num">70.1 / 9.3 / 89.7</td><td class="num">407.7 / 32.4 / 22.5</td></tr>
+    <tr><td>qwen3-8b</td><td class="num">114.7 / 16.0 / 51.9</td><td class="num">—</td></tr>
+    <tr><td>qwen3-14b</td><td class="num">179.5 / 28.9 / 29.4</td><td class="num">1147.1 / 89.3 / 8.1</td></tr>
+    <tr><td>devstral-24b</td><td class="num">110.3 / 27.3 / 30.5</td><td class="num">448.8 / 94.7 / 8.9</td></tr>
+  </tbody>
+</table>
+<p>RTX 6000 Ada는 TTFT와 TPOT 모두 GB10보다 약 3–6배 빨랐다. RTX 6000 Ada에서는 7개 모델 모두 툴콜 검증을 통과했고, GB10에서는 모든 모델의 툴콜이 함수명 또는 인자 검증 경고로 분류되었다(원인은 별도로 규명하지 않음). GB10의 qwen3-8b는 병합된 비교표에 값이 없다. TPOT 격차가 3배 안팎에 모이는 것은 두 장비의 메모리 대역폭 차이와 비슷한 크기로, decode가 대역폭에 묶여 있다는 해석과 맞는다(해석).</p>
+<table>
+  <caption>런처·프록시 재사용처</caption>
+  <thead><tr><th>캠페인</th><th>런처가 맡은 일</th></tr></thead>
+  <tbody>
+    <tr><td>에이전트 행동 평가 하네스</td><td>평가 대상 모델 8–11종 교체 기동</td></tr>
+    <tr><td>샘플링 파라미터 격자 탐색</td><td>125개 조합마다 generation config를 바꿔 재기동</td></tr>
+    <tr><td>사내 임베딩 모델 serving 벤치마크</td><td>vision embedding용 계열 플래그 추가</td></tr>
+    <tr><td>타사 엔진 대비 vLLM 벤치마크</td><td>두 서버에서 같은 계층 구조로 vLLM 기동</td></tr>
+  </tbody>
+</table>
+
+<h2>시행착오</h2>
+<p>공용 서버에서 이전 서버를 정리하려고 패턴 기반 <code>pkill</code>을 썼다가, 같은 포트를 공유하던 팀원의 vLLM 서버까지 종료시킨 적이 있다. 이후 스크립트는 전용 포트만 쓰고 자신이 띄운 PID만 종료한다. 또 <code>vllm bench serve</code>는 서버가 죽어 있어도 종료 코드 0을 돌려주어, 무효 결과가 정상 행처럼 기록된 일이 있었다. 측정 전에 <code>/health</code>를 확인하고 결과 JSON의 완료 요청 수가 0이면 실패로 처리하는 가드를 넣었다. 계층 구조 자체의 함정도 있었다. 모델 계층에 남아 있던 <code>VLLM_ENFORCE_EAGER=true</code>가 조용히 적용되어 MoE 모델 decode가 7배 느리게 측정되었다(06번 사례). 이후 중요한 축은 명령행에 명시하고, 서버 로그의 non-default args를 결과에 첨부한다.</p>
+
+<h2>배운 점</h2>
+<p>벤치마크 수치의 신뢰도는 측정 코드보다 기동·정리·실패 판정 같은 주변 절차에서 먼저 무너진다. 설정을 계층으로 나누면 재사용은 쉬워지지만 어느 계층의 값이 적용됐는지 보이지 않게 되므로, 실행 전 해석 결과를 출력하는 <code>show</code>와 실행 후 실제 인자를 남기는 기록이 함께 있어야 한다.</p>
+</main>
+<div class="pager"><a href="04-embedding-serving-benchmark.html">← 임베딩 서빙 엔진 비교, 정합성 검증부터</a><a href="06-engine-survey-and-benchmark.html">코드를 읽고, 재고, 격차를 설명하기 →</a></div>
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-11</footer>
+</div>
+</body>
+</html>

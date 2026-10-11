@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>세션 Warm-up으로 첫 턴 TTFT 96% 단축 — 곽동우 · Dongwoo Kwak</title>
+<meta name="description" content="NPU 위 Qwen3.6-35B-A3B 에이전트 런타임에서 첫 턴 TTFT 24.4 s → 0.9 s. 원인은 엔진이 아니라 프롬프트 바이트였다.">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+<header class="masthead">
+  <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
+  <h1>세션 Warm-up으로 첫 턴 TTFT 96% 단축</h1>
+  <p class="sub">하이브리드 어텐션 모델의 엄격한 프리픽스 캐시를 실제로 맞히기 · 약 3분</p>
+  <nav><a href="../index.html">요약</a><a href="../index.html#index">목차</a><a href="../resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="../resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
+</header>
+<main>
+<dl class="facts">
+  <dt>소속</dt><dd>Dnotitia · Inference Optimization 파트</dd>
+  <dt>기간</dt><dd>2026.07 (3인 팀 NPU 에이전트 PoC, 2026.06 – 2026.07 중)</dd>
+  <dt>역할 범위</dt><dd>세션 활성화 시점 warm-up 설계·구현과 캐시 미적중 원인 진단은 본인 작업이다. 엔진의 프리픽스 snapshot/restore와 상주 skeleton은 팀원이 구현했고, warm-up은 그 위에서 동작한다.</dd>
+  <dt>기술</dt><dd>Python, 자체 NPU 추론 런타임(vLLM 미사용), Qwen3.6-35B-A3B, Jinja chat template, OpenClaw 게이트웨이 플러그인</dd>
+  <dt>핵심 결과</dt><dd>약 5.7K 토큰 에이전트 프롬프트에서 첫 턴 TTFT 24.4 s → 0.9 s (−96%), cached_tokens 5,683</dd>
+</dl>
+
+<h2>배경</h2>
+<p>3인 팀이 NPU(LPU 계열 가속기) 위에 자체 추론 런타임을 올리고, OpenClaw 기반 온디바이스 에이전트를 시연하는 PoC였다. 모델 Qwen3.6-35B-A3B는 full attention 층의 KV cache와 Gated DeltaNet(GDN) 층의 순환 상태(conv/recurrent state)를 함께 갖는 하이브리드 구조다. 가속기가 한 장이라 요청은 순차 처리되고, 런타임이 제공하는 성능 지표는 TTFT뿐이었다.</p>
+
+<h2>문제</h2>
+<p>에이전트 system prompt는 약 5.7K 토큰이다. 실측으로 4K 토큰 prefill이 17 s, 6.4K 토큰이 약 28 s 걸렸으니, 이 길이도 20초를 넘는다. 새 세션의 첫 질문마다 사용자는 24.4 s를 기다렸다. 프리픽스 캐시와 warm-up 플러그인이 이미 있었지만 효과는 0%였다.</p>
+<p>이 엔진의 캐시는 체크포인트를 하나만 두고, 새 요청이 체크포인트 토큰열로 정확히 시작하면서 더 길 때만 재사용한다. GDN 상태는 KV처럼 위치 단위로 잘라낼 수 없어서 부분 일치는 쓸 수 없다. 길이가 같은 일치도 RMSNorm 오류를 피하려고 거부한다. 결국 바이트 하나만 어긋나도 적중률은 0%가 된다.</p>
+
+<pre class="diagram">
+체크포인트(warm-up 결과)  [system 블록][&lt;|im_start|&gt;user\n]
+실제 첫 턴 요청           [system 블록][&lt;|im_start|&gt;user\n][질문 …][&lt;|im_start|&gt;assistant\n]
+                          └──── 토큰 단위 완전 일치, 요청이 더 김 ────┘ → HIT, 뒷부분만 prefill
+
+MISS 1  system 블록 안의 session=&lt;UUID&gt;가 세션마다 다름   → 앞부분부터 불일치
+MISS 2  warm-up 끝에 assistant 헤더가 붙음               → 실제 턴의 접두사가 아님
+</pre>
+
+<h2>접근</h2>
+<p><strong>휘발 필드 제거.</strong> 게이트웨이는 system prompt의 Runtime 줄에 <code>session=</code>, <code>sessionId=</code>(세션 UUID)를 넣고 있었다. 이 필드를 빼서 같은 워크스페이스의 모든 세션이 바이트 단위로 같은 system 블록을 갖게 했다.</p>
+<p><strong>sentinel-user 렌더링.</strong> 처음에는 warm-up에 <code>add_generation_prompt=false</code>를 줘서 system만 prefill하려 했다. 그러나 Qwen3.6 tool template이 user 메시지 없는 요청을 <code>No user query found in messages.</code>로 막아 500이 났다. 그래서 서버가 <code>[system, user="0"]</code>과 <code>[system, user="1"]</code>을 각각 렌더링하고, 두 결과의 공통 접두사(system 블록 + <code>&lt;|im_start|&gt;user\n</code>)만 <code>max_tokens=1</code>로 prefill해 체크포인트를 남기도록 고쳤다. 두 sentinel은 첫 토큰부터 다르므로 공통 접두사는 정확히 user 여는 태그 직후에서 끊긴다. 템플릿 출력을 흉내 내지 않고 템플릿이 직접 렌더링하게 했으므로, 실제 첫 턴과의 바이트 일치가 구조적으로 보장된다. 중간 assistant 턴에서만 <code>&lt;think&gt;</code>를 지우는 템플릿 비대칭은 <code>preserve_thinking</code>으로 맞췄다. warm-up은 사용자가 세션을 여는 시점, 즉 입력 전에 게이트웨이 플러그인이 보낸다.</p>
+
+<h2>결과</h2>
+<table>
+  <caption>신규 세션 첫 턴, Qwen3.6-35B-A3B, NPU 단일 장치, 순차 요청</caption>
+  <thead><tr><th>항목</th><th class="num">이전</th><th class="num">이후</th></tr></thead>
+  <tbody>
+    <tr><td>첫 턴 TTFT (약 5.7K 토큰 프롬프트)</td><td class="num">24.4 s</td><td class="num">0.9 s</td></tr>
+    <tr><td>재사용된 프롬프트 토큰 (cached_tokens)</td><td class="num">0</td><td class="num">5,683</td></tr>
+    <tr><td>프리픽스 캐시 판정 (엔진 로그)</td><td class="num">MISS</td><td class="num">첫 실제 턴부터 HIT</td></tr>
+  </tbody>
+</table>
+<p>다른 세션 구성에서도 엔진 로그에 <code>[prefix] cache HIT reused 2781/2817</code>가 찍혀, 질문 부분만 새로 prefill되는 것을 확인했다.</p>
+
+<h2>시행착오</h2>
+<p>첫 진단은 틀렸다. 엔진이 정확 일치만 허용하니 부분 일치를 지원하도록 엔진을 고쳐야 한다고 결론 냈다. 사흘 뒤 엔진에 HIT/MISS 사유(<code>EQUAL</code>, <code>diverge@K</code>, <code>no checkpoint</code>)를 남기는 로그를 추가하자, 원인이 엔진이 아니라 요청 쪽 바이트라는 것이 바로 드러났다.</p>
+<p>수정한 뒤에도 TTFT 60 s가 다시 나타났다. 수정이 실험용 사본에만 들어가 있었고, 실제로 구동 중인 플러그인에는 빠져 있었다. 이후로는 표면 TTFT가 아니라 엔진 로그의 판정으로 검증했다. 체크포인트 슬롯이 하나뿐이라 warm-up과 첫 입력 사이에 다른 요청이 끼면 덮어써지는 한계는 단일 사용자 데모 조건에서 감수했다. 같은 휘발 필드는 세션 초기화 revision 충돌도 일으켰는데, 안정 필드만으로 revision을 계산하도록 고쳤고 나중에 OpenClaw upstream에도 같은 수정이 반영된 것을 확인했다.</p>
+
+<h2>배운 점</h2>
+<p>엄격한 프리픽스 캐시에서는 chat template 플래그와 system prompt의 휘발 필드가 사실상 캐시 키의 일부다. 캐시 미적중은 엔진 구조를 의심하기 전에 요청 바이트를 먼저 비교해야 한다. 판정 사유를 남기는 로그 몇 줄이 사흘간의 잘못된 진단보다 빨랐다.</p>
+</main>
+<div class="pager"><a href="../index.html">← 요약</a><a href="02-ngram-table-2bit.html">102 GB n-gram 테이블을 GPU 한 장에 올리기 →</a></div>
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-11</footer>
+</div>
+</body>
+</html>
