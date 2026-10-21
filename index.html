@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>곽동우 — LLM 추론·서빙 최적화 엔지니어 — 곽동우 · Dongwoo Kwak</title>
-<meta name="description" content="LLM 추론·서빙 최적화 엔지니어 곽동우의 포트폴리오. 핵심 성과 요약, 경력 개요, 13개 사례 연구 목차.">
+<meta name="description" content="LLM 추론·서빙 최적화 엔지니어 곽동우의 포트폴리오. 핵심 성과 요약, 경력 개요, 14개 사례 연구 목차.">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
@@ -49,7 +49,7 @@ NPU 위 온디바이스 LLM 에이전트와 GPU 추론 엔진(디노티시아)�
   <tbody>
     <tr><td>2026.02 – 현재</td><td>디노티시아<br>Optimization Engineer</td>
         <td>NPU 온디바이스 LLM 에이전트 PoC의 에이전트–엔진 연동, 프리픽스 캐시 Warm-up, vLLM 기반 양자화 포팅,
-            에이전트 평가 하네스, 임베딩 서빙 벤치마크, 추론 엔진·모델 아키텍처 리서치</td></tr>
+            에이전트 평가 하네스, 임베딩 서빙 벤치마크, MoE 추측 디코딩 병목 분석, KV 캐시 오프로드 효과 예상, 추론 엔진·모델 아키텍처 리서치</td></tr>
     <tr><td>2025.03 – 2026.01</td><td>클레온<br>AI Engineer</td>
         <td>실시간 디지털 휴먼 생성 엔진(C++17, Triton, CUDA) 개발·운영, 메모리 누수 해결, TTS 배칭, 인프라 비용 절감</td></tr>
     <tr><td>2024.02 – 2024.10</td><td>티맥스클라우드<br>연구원</td>
@@ -64,7 +64,7 @@ NPU 위 온디바이스 LLM 에이전트와 GPU 추론 엔진(디노티시아)�
 <p>
 아래 목차의 각 항목은 하나의 문제를 다룬 사례 연구다. 모든 페이지는 같은 순서로 쓰였다.
 배경과 문제, 해결 메커니즘, 측정 결과, 시행착오, 배운 점. 맨 위의 사실 요약에는 "역할 범위"를 따로 적어
-본인이 직접 한 일과 팀의 성과를 구분했다. 전체를 읽는 데 약 33분이 걸린다.
+본인이 직접 한 일과 팀의 성과를 구분했다. 전체를 읽는 데 약 39분이 걸린다.
 시간이 부족하다면 01(Warm-up), 03(에이전트 평가), 08(메모리 누수) 세 편을 권한다.
 </p>
 
@@ -76,7 +76,7 @@ NPU 위 온디바이스 LLM 에이전트와 GPU 추론 엔진(디노티시아)�
 
 <ol class="toc">
 <li><span><a class="title" href="projects/01-warmup-ttft.html">세션 Warm-up으로 첫 턴 TTFT 96% 단축</a><span class="desc">NPU 위 Qwen3.6-35B-A3B 에이전트 런타임에서 첫 턴 TTFT 24.4 s → 0.9 s. 원인은 엔진이 아니라 프롬프트 바이트였다.</span></span><span class="meta">2026.07 · 3분</span></li>
-<li><span><a class="title" href="projects/02-ngram-table-2bit.html">102 GB n-gram 테이블을 GPU 한 장에 올리기</a><span class="desc">Qwen3.8-Flash-Next의 n-gram 임베딩 테이블(102 GB)을 13.5 GiB로 HBM에 상주시키고, 조회는 bf16 gather보다 빠르게(0.343 vs 0.507 ms) 만들었다.</span></span><span class="meta">2026.10 · 3분</span></li>
+<li><span><a class="title" href="projects/02-ngram-table-2bit.html">102 GB n-gram 테이블을 GPU 한 장에 올리기</a><span class="desc">Qwen3.8-Flash-Next의 n-gram 임베딩 테이블(102 GB)을 13.5 GiB로 HBM에 상주시키고, MoE LLM 3종을 4×H200 vLLM에서 서빙해 랭크당 가중치 84.7 → 64.0 GiB, KV 캐시 +54%를 토큰 지연 변화 없이 얻었다.</span></span><span class="meta">2026.10 · 4분</span></li>
 <li><span><a class="title" href="projects/03-agent-eval-harness.html">엔드포인트가 아니라 에이전트를 평가하기</a><span class="desc">에이전트 스택 전체를 pass@1로 채점하는 하네스로 8개·11개 모델을 비교하고, 다국어 깨짐 토큰의 원인을 vLLM 기본 temperature 1.0으로 규명했다.</span></span><span class="meta">2026.06 – 2026.07 · 3분</span></li>
 <li><span><a class="title" href="projects/04-embedding-serving-benchmark.html">임베딩 서빙 엔진 비교, 정합성 검증부터</a><span class="desc">사내 2B 비전-언어 임베딩 모델을 세 엔진으로 서빙해 비교하고, 경고 없이 벡터를 망가뜨리는 요청 경로를 찾아 안전한 서빙 방법을 정했다.</span></span><span class="meta">2026.08 – 2026.09 · 3분</span></li>
 <li><span><a class="title" href="projects/05-vllm-serving-toolkit.html">크로스 디바이스 vLLM 스모크 하네스와 계층형 런처</a><span class="desc">7개 모델을 RTX 6000 Ada와 GB10에서 같은 절차로 측정하는 스모크 하네스, 플래그 파일 5계층으로 vLLM을 띄우는 런처, 요청을 기록하는 프록시를 만들고 이후 벤치마크 캠페인의 공통 기반으로 쓴 기록</span></span><span class="meta">2026.06 · 3분</span></li>
@@ -86,18 +86,20 @@ NPU 위 온디바이스 LLM 에이전트와 GPU 추론 엔진(디노티시아)�
 <li><span><a class="title" href="projects/09-abnormal-frame-detection.html">경량화 얼굴 생성 모델의 깨진 프레임 탐지</a><span class="desc">경량화 얼굴 애니메이션 모델이 가끔 만드는 깨진 프레임을 히스토그램 차이로 탐지해 교체, 프레임당 0.85 ms로 경량화 모델을 유지하고 파드당 프로세스를 2배로 늘린 기록</span></span><span class="meta">2025.07 – 2025.08 · 2분</span></li>
 <li><span><a class="title" href="projects/10-tts-batching-and-cost.html">TTS 동적 문장 배칭과 서빙 비용 정리</a><span class="desc">CUDA Graph로 업그레이드된 GPT-SoVITS 서버에 동적 문장 배칭을 붙여 요청 수 75% 감소·E2E 지연 최대 80% 단축, 엔진/GPU 노드 분리로 AWS GPU 노드 40% 절감, Gemini 챗봇 모듈과 RAG·이미지 모델 연동 개선</span></span><span class="meta">2025.03 – 2026.01 · 3분</span></li>
 <li><span><a class="title" href="projects/11-triton-iaas-and-middleware.html">Triton 기반 모델 서빙 IaaS와 사내 미들웨어</a><span class="desc">Tmax Cloud에서 Triton core C API를 사내 epoll 프레임워크에 포팅해 비동기 추론 엔드포인트를 만들고, JSON 라이브러리를 glaze로 교체해 쓰기 7배·읽기 3배를 얻은 기록과 수습 과제</span></span><span class="meta">2024.02 – 2024.10 · 3분</span></li>
-<li><span><a class="title" href="projects/12-tools-and-background.html">도구, 학습, 그리고 배경</a><span class="desc">Neovim 환경 자동화, 백준 풀이 스캐폴드, IRC 서버 epoll 전환 같은 개인 도구와 경제학 전공·42 Seoul·공군·조정부로 이어진 배경</span></span><span class="meta">2012 – 현재 · 2분</span></li>
+<li><span><a class="title" href="projects/12-moe-mtp-tier-go-nogo.html">MoE 검증 스텝은 왜 세션이 늘면 느려지나</a><span class="desc">Qwen3.8-Flash-Next(512 expert, top-10)에서 MTP가 다중 세션에서 가속되지 않는 원인을 (토큰, expert) 경로 수에 비례하는 FFN 비용으로 규명하고, 제안된 expert 등급별 dense 계산 파이프라인을 엔진 수정 전에 수치로 판정해 중단(스텝 이득 4–8%, 문턱 20%)한 기록</span></span><span class="meta">2026.10 · 4분</span></li>
+<li><span><a class="title" href="projects/13-dense-kv-offload-projection.html">실물 없는 가속기의 효과를 어떻게 재나</a><span class="desc">사내 가속기를 2번째 장치로 붙여 KV 캐시와 full attention을 옮기는 설계를, 실물 없이 GPU에 장치 비용만큼 지연을 주입하는 방식으로 측정하고 256K·1M 문맥 예상으로 확장해 상주 용량 이득과 대화당 속도의 한계를 함께 보인 기록</span></span><span class="meta">2026.10 · 3분</span></li>
+<li><span><a class="title" href="projects/14-tools-and-background.html">도구, 학습, 그리고 배경</a><span class="desc">Neovim 환경 자동화, 백준 풀이 스캐폴드, IRC 서버 epoll 전환 같은 개인 도구와 경제학 전공·42 Seoul·공군·조정부로 이어진 배경</span></span><span class="meta">2012 – 현재 · 2분</span></li>
 </ol>
 
 <h2>연락처</h2>
 <p>
 이메일 <a href="mailto:dong0881414@gmail.com">dong0881414@gmail.com</a> ·
-GitHub <a href="https://github.com/monkeyKing001">github.com/monkeyKing001</a> ·
+GitHub <a href="https://github.com/go-deung-eo">github.com/go-deung-eo</a> ·
 이력서 <a href="resume/Resume_Dongwoo_Kwak_KO.pdf">국문 PDF</a>, <a href="resume/Resume_Dongwoo_Kwak_EN.pdf">English PDF</a>
 </p>
 </main>
 
-<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-11</footer>
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-21</footer>
 </div>
 </body>
 </html>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MoE 검증 스텝은 왜 세션이 늘면 느려지나 — 곽동우 · Dongwoo Kwak</title>
+<meta name="description" content="Qwen3.8-Flash-Next(512 expert, top-10)에서 MTP가 다중 세션에서 가속되지 않는 원인을 (토큰, expert) 경로 수에 비례하는 FFN 비용으로 규명하고, 제안된 expert 등급별 dense 계산 파이프라인을 엔진 수정 전에 수치로 판정해 중단(스텝 이득 4–8%, 문턱 20%)한 기록">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+<header class="masthead">
+  <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
+  <h1>MoE 검증 스텝은 왜 세션이 늘면 느려지나</h1>
+  <p class="sub">fine-grained MoE의 MTP 병목 규명과 expert 티어 파이프라인 go/no-go — 실측 라우팅 기록, NVFP4 dense wave 마이크로벤치, 정책별 스텝 시뮬레이션 · 약 4분</p>
+  <nav><a href="../index.html">요약</a><a href="../index.html#index">목차</a><a href="../resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="../resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
+</header>
+<main>
+<dl class="facts">
+  <dt>소속</dt><dd>Dnotitia · Inference Optimization 파트</dd>
+  <dt>기간</dt><dd>2026.10 (약 1주)</dd>
+  <dt>역할 범위</dt><dd>선행 연구 조사, HBM/PCIe 산술 모델, 라우팅 기록 훅·마이크로벤치·시뮬레이터의 설계와 판정 기준 설정, 결과 검증과 go/no-go 판정은 본인. 코드와 측정 스크립트는 AI 코딩 에이전트를 지휘해 작성했다. 측정 대상은 팀이 포팅 중인 참조 엔진(팀 코드)이며, 스텝 단위 nsys 분해 일부는 같은 날 다른 세션의 산출물을 기준으로 썼다. 엔진 수정은 하지 않았다.</dd>
+  <dt>기술</dt><dd>Qwen3.8-Flash-Next (MoE 512 expert · top-10 · 48층, MTP), NVFP4, flashinfer <code>mm_fp4</code>, CUDA Graph, NVTX / nsys, PyTorch, RTX 5090 (16층 축소본)</dd>
+  <dt>핵심 결과</dt><dd>MoE의 MTP 가속이 1세션 1.54배에서 16세션 0.83배로 떨어지는(같은 조건 dense 2.1–2.7배) 원인을 (토큰, expert) 경로 수에 비례하는 FFN 비용으로 규명. 정적 expert 티어 파이프라인은 1티어 밖 expert를 쓰는 행이 95–100%, 스텝 이득 4–8%(문턱 20%)로 no-go. 배치 고유 expert 합집합 grouped GEMM이 8세션 이상에서 MoE 1.7–2.6배로 후속 과제.</dd>
+</dl>
+
+<h2>배경</h2>
+<p>MTP(multi-token prediction)는 draft 모듈이 K개 토큰을 미리 내고, 본 모델이 K+1개 토큰을 한 스텝에서 검증하는 추측 디코딩이다. dense 모델은 decode가 가중치 읽기에 묶여 있어 검증 스텝이 토큰 하나짜리 스텝과 거의 같은 시간에 끝나고, 그 차이가 가속이 된다. Qwen3.8-Flash-Next는 층마다 512개 expert 중 10개를 고르는 fine-grained MoE라, 검증 배치의 토큰 n × (K+1)개가 저마다 다른 expert를 호출한다. 팀은 이 모델을 참조 엔진에 포팅하면서 다중 세션에서 MTP를 켜도 빨라지지 않는 현상을 보고 있었다.</p>
+
+<h2>문제</h2>
+<p>참조 엔진에 NVTX 모듈 구간을 걸고 nsys로 추측 100% 수락 상한에서 세션 1–16의 모듈별 시간을 쟀다. MTP 가속은 dense 27B에서 2.12–2.74배로 유지되었지만, MoE에서는 1세션 1.54배에서 16세션 0.83배로 떨어져 끄는 쪽이 빨랐다. 늘어난 시간은 MoE FFN이었다. 제안된 해법은 "인기 expert를 1티어로 묶어 모든 행에 dense GEMM으로 무조건 계산하고, 2·3티어가 필요한 행은 모아서 주기적으로 계산"하는 파이프라인이었다. 엔진을 고치기 전에 두 가지를 수치로 답해야 했다. 검증 스텝의 추가 비용이 정말 expert 가중치를 더 읽어서 생기는가, 그리고 티어 파이프라인이 그 비용을 줄이는가.</p>
+
+<h2>접근 ① 병목이 바이트인지 경로인지</h2>
+<p>먼저 산술로 상한을 그었다. NVFP4 expert 하나는 2.61 MB이고, 라우팅이 무상관이면 토큰 t개가 건드리는 고유 expert 수는 512 × (1 − (502/512)<sup>t</sup>)이다. 48층 기준 토큰 하나의 HBM 읽기는 dense 부분 8.62 GB에 expert 1.33 GB이므로, 검증 토큰 3개의 고유 expert 바이트는 전체의 +17%, 5개는 +29%에 그친다. 2–3배의 스텝 시간 증가는 바이트로 설명되지 않는다. 다음으로 expert 캐시를 전부 상주시킨 조건과 1/3만 상주시킨 조건에서 검증 스텝 시간을 decode 스텝 대비 비율로 교차 측정했다.</p>
+<table>
+  <caption>검증 스텝 시간 ÷ 단일 토큰 decode 스텝 시간. 16층 축소본, RTX 5090, 128 토큰 × 2회</caption>
+  <thead><tr><th>조건</th><th class="num">세션 1</th><th class="num">세션 2</th><th class="num">세션 4</th></tr></thead>
+  <tbody>
+    <tr><td>전부 상주, K=2</td><td class="num">2.05×</td><td class="num">1.69×</td><td class="num">2.16×</td></tr>
+    <tr><td>전부 상주, K=4</td><td class="num">2.71×</td><td class="num">2.31×</td><td class="num">3.13×</td></tr>
+    <tr><td>1/3 상주, K=4</td><td class="num">—</td><td class="num">—</td><td class="num">5.23×</td></tr>
+  </tbody>
+</table>
+<p>전부 상주해도 K=4에서 스텝이 2.3–3.1배 느렸고, expert 공유 여부는 7% 차이밖에 내지 않았다. 원인은 decode 경로의 MoE 커널이 (행, expert) 경로마다 가중치를 다시 올리는 구조였다. 비용은 고유 expert 수가 아니라 경로 수 n × (K+1) × 10에 비례한다. 1/3 상주 조건에서는 여기에 PCIe 적재가 스텝의 54%를 더했다. 선행 연구 14편 중 GPU에서 "전부 계산 후 마스킹"으로 이득을 본 사례는 64–208행에서 1.12배 이하였다.</p>
+
+<h2>접근 ② 티어 파이프라인 go/no-go</h2>
+<p>등급 상주나 prefetch는 바이트를 줄이는 수단이라 경로 비용에는 듣지 않는다. 남은 질문은 티어 제안의 dense wave가 경로별 커널보다 싸고, 1티어 밖으로 새는 행이 충분히 적은가였다. 세 단계로 측정했다.</p>
+<pre class="diagram">
+D0 라우팅 기록   MoE forward에 훅 → 층·토큰별 top-10 id와 softmax 가중치 기록
+                 5부류 25 프롬프트 teacher forcing → 55,217 토큰 × 16층
+D1 마이크로벤치  경로별 GEMV 커널 / prefill grouped 커널 /
+                 flashinfer mm_fp4 dense wave (gate_up → silu·마스크 → down, 행 10–256)
+                 D0 라우팅을 재생해 같은 입력으로 비교
+D2 시뮬레이터    기록을 검증 배치(세션 n × 연속 K+1 토큰)로 재생, 학습/시험 프롬프트 분리
+                 정책별(현재 / grouped / 합집합 dense / 정적 hot k개 + cold) 층 비용을
+                 D1 곡선으로 매기고 nsys 스텝 분해에 접합
+</pre>
+<table>
+  <caption>Qwen3.8-Flash-Next 16층 축소본, RTX 5090, 무작위 NVFP4 가중치, CUDA Graph 30회 평균. 시험 프롬프트 기준</caption>
+  <thead><tr><th>항목</th><th class="num">값</th></tr></thead>
+  <tbody>
+    <tr><td>정적 인기 상위 34 expert가 덮는 경로 (층별)</td><td class="num">18–56%</td></tr>
+    <tr><td>1티어 밖 expert를 쓰는 행 (3티어 102개까지 넓혀도)</td><td class="num">99–100% (95%)</td></tr>
+    <tr><td>expert 26% 캐시의 적중률, 정적 티어 vs LRU</td><td class="num">61.5% vs 83.1%</td></tr>
+    <tr><td>dense wave expert당 비용 (HBM 바닥 1.55 µs)</td><td class="num">2.2–4.6 µs</td></tr>
+    <tr><td>dense wave가 경로별 커널보다 싸지는 조건</td><td class="num">expert당 경로 1.3–2.5 이상</td></tr>
+    <tr><td>요청 4 · K=4에서 실측 expert당 경로 겹침</td><td class="num">1.9</td></tr>
+    <tr><td>티어 파이프라인 스텝 이득 (요청 4 K=4 / 4 K=2 / 1)</td><td class="num">+8.1% / +3.9% / +6.6%</td></tr>
+    <tr><td>배치 고유 expert 합집합 grouped GEMM, MoE 시간 (8세션 K=4 / 50세션)</td><td class="num">1.7× / 2.3–2.6×</td></tr>
+  </tbody>
+</table>
+<p>정적 티어는 두 방향에서 무너졌다. 1티어가 덮는 경로가 절반에 못 미치고, 시험 프롬프트의 검증 배치에서는 거의 모든 행이 1티어 밖 expert를 하나는 쓴다. "주기적으로 계산"하는 조각이 결국 모든 행을 멈춘다는 뜻이다. dense wave 자체도 경로가 expert당 1.3–2.5개 이상 겹쳐야 경로별 커널을 이기는데, 실측 겹침은 1.9였다. 스텝 전체로 접합한 이득은 4–8%로 사전에 정한 문턱 20%에 미치지 못해 no-go로 판정했다. 살아남은 것은 배치의 고유 expert 합집합만 grouped GEMM으로 처리하는 동적 방식으로, 8세션 이상에서 MoE 시간이 1.7–2.6배 줄었다. 단 48층 50세션은 그래도 MoE만으로 ITL 예산을 넘어, 커널과 함께 draft 어휘 축소와 K 적응이 다음 과제로 남았다.</p>
+
+<h2>시행착오</h2>
+<p>flashinfer의 <code>grouped_mm_fp4</code>는 cuDNN 9.21 이상이 필요해 설치본(9.19)에서 돌지 않았고, 합집합 dense 마스킹으로 상한을 대신 쟀다. cutlass 백엔드의 down GEMM(N=2560)은 출력 타일 20개로 SM을 못 채워 66 µs가 걸렸고, split-K를 손으로 나눠도 더 느렸다. 성분별 측정으로 이 병목을 찾아 b12x 백엔드로 바꾸자 35 µs로 줄었다. 엔진의 캐시 자동 모드는 오프로드 경로의 조회·채우기 비용이 남아 진짜 상주가 아니었고, 오프로드를 끈 다른 세션의 결과를 기준으로 삼았다. 초기 요약의 "전부 상주에서도 2.4배"는 1/3 캐시 조건의 오인용이었고, 교차 측정으로 바로잡았다. GPU 성능 카운터 권한이 없는 서버라 ncu 대신 nsys 구간 측정을 썼다.</p>
+
+<h2>배운 점</h2>
+<p>fine-grained MoE에서 "고유 expert가 몇 개냐"는 잘못된 질문이었다. 커널이 경로마다 가중치를 다시 올리는 한 비용은 경로 수를 따른다. 정적 티어 같은 캐시형 해법은 라우팅의 긴 꼬리에 진다. 어느 행이든 티어 밖 expert 하나는 쓰기 때문이다. 엔진을 고치기 전에 라우팅 기록과 마이크로벤치, 시뮬레이터로 일주일 안에 판정한 덕에 큰 수정 하나를 피했다.</p>
+</main>
+<div class="pager"><a href="11-triton-iaas-and-middleware.html">← Triton 기반 모델 서빙 IaaS와 사내 미들웨어</a><a href="13-dense-kv-offload-projection.html">실물 없는 가속기의 효과를 어떻게 재나 →</a></div>
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-21</footer>
+</div>
+</body>
+</html>

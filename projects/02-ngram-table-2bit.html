@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>102 GB n-gram 테이블을 GPU 한 장에 올리기 — 곽동우 · Dongwoo Kwak</title>
-<meta name="description" content="Qwen3.8-Flash-Next의 n-gram 임베딩 테이블(102 GB)을 13.5 GiB로 HBM에 상주시키고, 조회는 bf16 gather보다 빠르게(0.343 vs 0.507 ms) 만들었다.">
+<meta name="description" content="Qwen3.8-Flash-Next의 n-gram 임베딩 테이블(102 GB)을 13.5 GiB로 HBM에 상주시키고, MoE LLM 3종을 4×H200 vLLM에서 서빙해 랭크당 가중치 84.7 → 64.0 GiB, KV 캐시 +54%를 토큰 지연 변화 없이 얻었다.">
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body>
@@ -12,16 +12,16 @@
 <header class="masthead">
   <div class="kicker">Portfolio · LLM Inference &amp; Serving</div>
   <h1>102 GB n-gram 테이블을 GPU 한 장에 올리기</h1>
-  <p class="sub">2-bit 룩업테이블 양자화의 vLLM 포팅과 Triton gather-decode 커널 · 약 3분</p>
+  <p class="sub">2-bit 룩업테이블 양자화의 vLLM 포팅, Triton gather-decode 커널, 4×H200 서빙 측정 · 약 4분</p>
   <nav><a href="../index.html">요약</a><a href="../index.html#index">목차</a><a href="../resume/Resume_Dongwoo_Kwak_KO.pdf">이력서(국문)</a><a href="../resume/Resume_Dongwoo_Kwak_EN.pdf">Resume (EN)</a></nav>
 </header>
 <main>
 <dl class="facts">
   <dt>소속</dt><dd>Dnotitia · Inference Optimization 파트</dd>
-  <dt>기간</dt><dd>2026.10 (약 1주)</dd>
-  <dt>역할 범위</dt><dd>양자화 알고리즘과 논문은 동료의 연구다. 본인은 원본 테이블 확보·검증, vLLM 0.31 포팅, fused Triton 디코드 커널, 마이크로벤치마크와 품질(KL) 측정을 맡았다. 구현은 AI 코딩 에이전트를 지휘해 진행했고 수치 검증은 본인이 했다. 코드는 아직 내부 브랜치 상태다.</dd>
-  <dt>기술</dt><dd>vLLM 0.31, Triton, PyTorch, CUDA (RTX 5090, H200)</dd>
-  <dt>핵심 결과</dt><dd>102.4 GB 테이블을 13.5 GiB로 HBM에 상주, 디코드 bit-exact, 65,536 토큰 조회 0.507 → 0.343 ms</dd>
+  <dt>기간</dt><dd>2026.10 (약 2주)</dd>
+  <dt>역할 범위</dt><dd>양자화 알고리즘과 논문은 동료의 연구다. 본인은 원본 테이블 확보·검증, vLLM 0.31 포팅(Qwen3.8-Flash-Next, DeepSeek-V4.1-Flash, LongCat-Flash-Lite), fused Triton 디코드 커널, 마이크로벤치마크, 4×H200 서빙 측정과 엔진 경로 품질 측정을 맡았다. 구현은 AI 코딩 에이전트를 지휘해 진행했고 수치 검증은 본인이 했다. 패치와 측정 결과는 저자 저장소의 브랜치로 넘겼다.</dd>
+  <dt>기술</dt><dd>vLLM 0.31, Triton, PyTorch, lm-evaluation-harness, CUDA (RTX 5090, 4×H200 TP4)</dd>
+  <dt>핵심 결과</dt><dd>102.4 GB 테이블을 13.5 GiB로 HBM에 상주, 디코드 bit-exact. 4×H200 vLLM에서 Qwen 랭크당 가중치 84.7 → 64.0 GiB, KV 캐시 +54%, TPOT 차이 0.6% 이내. DeepSeek은 FP8 테이블로는 기동 불가 → 2-bit로 GPU 상주 서빙</dd>
 </dl>
 
 <h2>배경</h2>
@@ -68,17 +68,31 @@ bf16      ids ─▶ gather 16행 × 320 B ────────────�
 
 <p>HBM 경로는 디코드를 포함하고도 bf16 gather보다 32% 빠르다. 옮기는 바이트가 7.6배 줄었고, 디코드 연산은 메모리 대기 안에서 처리되기 때문이다. pinned 경로도 1.8배 빨라졌지만 PCIe 트랜잭션 지연이 바닥에 남아 HBM 상주를 대신하지는 못한다.</p>
 
-<p>모델 전체 출력 분포 기준 품질(KL divergence)도 FP8, RTN 3-bit, RTN 2-bit와 함께 비교했다. 이 측정은 미공개 연구와 사내 환경에 묶여 있어 수치는 싣지 않는다. 요약하면 같은 2-bit대에서 단순 반올림(RTN)보다 오차가 뚜렷이 작았고, 이 결과가 포팅을 계속할 근거가 됐다.</p>
-<div class="note"><strong>하지 않은 것</strong> 백본을 포함한 <code>vllm serve</code> 전체 기동(TP4), CUDA graph 캡처, 서빙 수준 처리량·TTFT, 과제 점수(lm_eval)는 측정하지 않았다. 양자화 테이블이 공개되지 않았고 저자와 조율 전이라 upstream PR도 내지 않았다.</div>
+<h3>서빙 측정 (4×H200, TP4)</h3>
+<p>테이블 단위 결과가 실제 서빙에서도 유지되는지 보려고 백본까지 포함한 <code>vllm serve</code>를 세 모델에 대해 띄웠다. DeepSeek-V4.1-Flash Engram(66 B 레코드)과 LongCat-Flash-Lite(16×16 타일 포맷)는 같은 방식으로 포팅했고, GPU에 둔 테이블은 세 모델 모두 커널 하나가 gather와 디코드를 함께 한다.</p>
+<table>
+  <caption>4×H200 141 GB, TP4, --gpu-memory-utilization 0.90, max-model-len 8192. TPOT는 vllm bench serve 중앙값(입력 2048, 출력 256, 동시성 1). 구성당 1회</caption>
+  <thead><tr><th>모델 · 테이블 위치</th><th class="num">원본</th><th class="num">2-bit</th></tr></thead>
+  <tbody>
+    <tr><td>Qwen3.8-Flash-Next 랭크당 가중치 (GPU 상주)</td><td class="num">84.7 GiB</td><td class="num">64.0 GiB</td></tr>
+    <tr><td>Qwen3.8-Flash-Next KV 캐시</td><td class="num">38.2 GiB</td><td class="num">58.9 GiB (+54%)</td></tr>
+    <tr><td>Qwen3.8-Flash-Next 호스트 배치 시 프로세스 RSS</td><td class="num">147 GiB</td><td class="num">35 GiB</td></tr>
+    <tr><td>Qwen3.8-Flash-Next TPOT</td><td class="num">5.27 ms</td><td class="num">5.25 ms</td></tr>
+    <tr><td>DeepSeek-V4.1-Flash GPU 상주 (원본 FP8)</td><td class="num">기동 불가</td><td class="num">기동, KV 30.2 GiB</td></tr>
+    <tr><td>DeepSeek-V4.1-Flash 호스트 배치 시 RSS</td><td class="num">282 GiB</td><td class="num">80 GiB</td></tr>
+  </tbody>
+</table>
+<p>품질은 패치에 전 어휘 로짓 덤프를 넣어 엔진 경로 KL을 직접 쟀고, 과제 점수(lm_eval)와 SimpleQA LLM 판정도 함께 봤다. 2-bit와 원본의 과제 점수 차이는 모두 95% 신뢰구간 안이었고, RTN 2-bit 대비 KL 비율은 저자들의 HF 경로 결과와 같은 값이 나왔다. 미공개 연구라 KL과 과제 수치는 싣지 않는다.</p>
+<div class="note"><strong>하지 않은 것</strong> TPOT 반복 측정(구성당 1회), LongCat의 엔진 경로 KL, upstream vLLM PR. pinned host 경로는 여전히 gather와 디코드가 두 단계다.</div>
 
 <h2>시행착오</h2>
-<p>fp8이면 빨라질 것이라는 가정은 측정 한 번에 깨졌고, 커널 목표를 "bf16 gather 시간 이내"로 다시 잡았다. 해시는 config의 <code>eos_token_id</code>(248044)를 쓰는데 토크나이저 eos(248046)와 달라서, 이를 놓치면 주소가 조용히 어긋난다. KL 측정에서는 <code>torch.no_grad</code>를 빠뜨리면 활성화가 GPU당 50 GiB까지 차서 OOM이 났다. vLLM 실제 pinned 경로는 gather, prefetch 버퍼, 디코드가 커널 두 개와 스트림 동기화로 나뉘어 fused 벤치보다 느리다(16K 토큰 6.05 ms 대 3.08 ms). 디코드를 UVA gather 커널에 합치는 것이 다음 과제다.</p>
+<p>fp8이면 빨라질 것이라는 가정은 측정 한 번에 깨졌고, 커널 목표를 "bf16 gather 시간 이내"로 다시 잡았다. 해시는 config의 <code>eos_token_id</code>(248044)를 쓰는데 토크나이저 eos(248046)와 달라서, 이를 놓치면 주소가 조용히 어긋난다. KL 측정에서는 <code>torch.no_grad</code>를 빠뜨리면 활성화가 GPU당 50 GiB까지 차서 OOM이 났다. 서빙 측정 중에는 vLLM이 가중치 파일 순서에 따라 <code>load_weights</code>를 여러 번 부르면서 LongCat의 MLA layernorm 스케일이 빠져 PPL이 706으로 나오는 기존 버그를 만났다. 포맷과 무관한 버그라 기준선까지 같은 수정본으로 다시 쟀다. vLLM 실제 pinned 경로는 gather, prefetch 버퍼, 디코드가 커널 두 개와 스트림 동기화로 나뉘어 fused 벤치보다 느리다(16K 토큰 6.05 ms 대 3.08 ms). 디코드를 UVA gather 커널에 합치는 것이 다음 과제다.</p>
 
 <h2>배운 점</h2>
 <p>작은 행을 무작위로 모으는 gather는 트랜잭션 바운드라 정밀도를 낮춰도 빨라지지 않는다. 이 경우 압축의 가치는 속도가 아니라 테이블의 위치를 host에서 HBM으로 옮기는 데 있었다. 측정 전에 원본 통계를 논문과 맞춰 둔 것이 이후 숫자를 믿을 근거가 됐다.</p>
 </main>
 <div class="pager"><a href="01-warmup-ttft.html">← 세션 Warm-up으로 첫 턴 TTFT 96% 단축</a><a href="03-agent-eval-harness.html">엔드포인트가 아니라 에이전트를 평가하기 →</a></div>
-<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-11</footer>
+<footer>© 2026 곽동우 · Dongwoo Kwak · 마지막 갱신 2026-10-21</footer>
 </div>
 </body>
 </html>
